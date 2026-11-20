@@ -1,0 +1,12 @@
+; DO NOT EDIT (unless you know what you are doing)
+;
+; This subdirectory is a git "subrepo", and this file is maintained by the
+; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme
+;
+[subrepo]
+	remote = git@github.com:/gabomdq/SDL_GameControllerDB.git
+	branch = master
+	commit = 28a856f2b92da8891b161acd0abd64fbf4445d97
+	parent = c9b3501061a8a354837dd519b5dc9e57fe4b703a
+	method = merge
+	cmdver = 0.4.6

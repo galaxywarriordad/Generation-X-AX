@@ -1,0 +1,12 @@
+; DO NOT EDIT (unless you know what you are doing)
+;
+; This subdirectory is a git "subrepo", and this file is maintained by the
+; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme
+;
+[subrepo]
+	remote = git@github.com:/mupen64plus/mupen64plus-rsp-cxd4.git
+	branch = master
+	commit = 821d553fc8ab264fb04862edeff9e7bedc366946
+	parent = e31d8f24f5b914ec8b8341971197e3d3d2f07c18
+	method = merge
+	cmdver = 0.4.6
