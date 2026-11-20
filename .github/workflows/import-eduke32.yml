@@ -1,0 +1,53 @@
+name: Import EDuke32 Subtree
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream branch or tag to import"
+        required: true
+        default: "master"
+
+permissions:
+  contents: write
+
+jobs:
+  import-eduke32:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Generation-X-AX
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Stash custom wrapper CMakeLists.txt
+        run: |
+          mkdir -p /tmp/ax-eduke32-wrapper
+          if [ -f engines/eduke32/CMakeLists.txt ]; then
+            cp engines/eduke32/CMakeLists.txt /tmp/ax-eduke32-wrapper/CMakeLists.txt
+            git rm -rf engines/eduke32
+            git commit -m "chore: temporarily remove empty engines/eduke32 before subtree import"
+          fi
+
+      - name: Import EDuke32 subtree (--squash)
+        env:
+          SCHEME: "https"
+          EDUKE32_HOST: "voidpoint.io"
+          EDUKE32_PATH: "terminx/eduke32.git"
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          UPSTREAM_URL="${SCHEME}://${EDUKE32_HOST}/${EDUKE32_PATH}"
+          git subtree add --prefix=engines/eduke32 "${UPSTREAM_URL}" "${{ inputs.ref }}" --squash
+
+      - name: Restore custom CMake wrapper
+        run: |
+          mkdir -p engines/eduke32
+          cp /tmp/ax-eduke32-wrapper/CMakeLists.txt engines/eduke32/CMakeLists.txt
+          git add engines/eduke32/CMakeLists.txt
+          git commit -m "feat(eduke32): restore custom CMake GNUmakefile wrapper"
+
+      - name: Push to main
+        run: |
+          git push origin main
