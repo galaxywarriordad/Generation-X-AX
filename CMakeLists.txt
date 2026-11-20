@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(AX_BUILD_RMG "Build RMG (Nintendo 64) engine" ON)
 option(AX_BUILD_BLASTEM "Build BlastEm (Sega Mega Drive) engine" ON)
 option(AX_BUILD_CANNONBALL "Build Cannonball (1986 OutRun) engine" ON)
+option(AX_BUILD_EDUKE32 "Build EDuke32 FPS engine" ON)
+option(AX_BUILD_FRONTIER "Build Frontier: Elite II engine" ON)
 option(AX_FETCH_SDK "Fetch ax-sdk v1_36_1 if AX_SDK_DIR is not set" ON)
 
 set(AX_SDK_DIR "" CACHE PATH "Path to local ax-sdk checkout")
@@ -56,4 +58,12 @@ endif()
 
 if(AX_BUILD_CANNONBALL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/cannonball/cmake/CMakeLists.txt")
   add_subdirectory(engines/cannonball/cmake)
+endif()
+
+if(AX_BUILD_EDUKE32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/eduke32/CMakeLists.txt")
+  add_subdirectory(engines/eduke32)
+endif()
+
+if(AX_BUILD_FRONTIER AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/frontier/CMakeLists.txt")
+  add_subdirectory(engines/frontier)
 endif()
