@@ -13,7 +13,11 @@ project (cannonball)
 # -----------------------------------------------------------------------------
 
 # CMake default file (override with -DTARGET=file)
-set(DCMAKE win64-opengl.cmake)
+if(WIN32)
+    set(DCMAKE win64-opengl.cmake)
+else()
+    set(DCMAKE linux-opengl.cmake)
+endif()
 
 # Source location
 set(main_cpp_base ../src/main)
@@ -121,10 +125,12 @@ else()
 	)
 endif()
 
-set(src_directx
-    "${main_cpp_base}/directx/ffeedback.hpp"
-    "${main_cpp_base}/directx/ffeedback.cpp"
-)
+if(WIN32)
+    set(src_directx
+        "${main_cpp_base}/directx/ffeedback.hpp"
+        "${main_cpp_base}/directx/ffeedback.cpp"
+    )
+endif()
 
 set(src_engine
     "${main_cpp_base}/engine/oaddresses.hpp"
@@ -227,7 +233,14 @@ if(WIN32)
 endif(WIN32)
 
 add_executable(cannonball ${SRCS})
-
+if(TARGET ax_retro_bridge)
+  target_link_libraries(cannonball ax_retro_bridge)
+endif()
+if(TARGET ax_sdk)
+  target_link_libraries(cannonball ax_sdk)
+elseif(DEFINED AX_SDK_INCLUDE_DIRS)
+  target_include_directories(cannonball PRIVATE ${AX_SDK_INCLUDE_DIRS})
+endif()
 # -----------------------------------------------------------------------------
 # Compiler Definitions
 # -----------------------------------------------------------------------------
