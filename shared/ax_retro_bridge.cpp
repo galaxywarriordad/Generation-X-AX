@@ -47,6 +47,10 @@ std::string_view RetroBridge::engine_name() const noexcept {
       return "blastem";
     case EngineId::Cannonball:
       return "cannonball";
+    case EngineId::EDuke32:
+      return "eduke32";
+    case EngineId::Frontier:
+      return "frontier";
   }
   return "unknown";
 }
@@ -146,10 +150,3 @@ std::size_t RetroBridge::push_audio_interleaved(const float* samples, std::size_
 }
 
 }  // namespace ax::retro
-```[cite: 6, 7, 9, 11, 13]
-
-### What to Check Next
-* If your `ax-sdk` checkout has `allocate_fastmem_arena` in `src/memory.cpp` rather than `AllocateFastmemArena`, check `include/ax/memory.hpp` vs `src/memory.cpp` when compiling so the linker sees matching symbols[cite: 6, 16].
-* Also check `include/ax/config.hpp` for the exact field name of `enable_shared_memory_export` (in `config.cpp` it's parsed into `out_config.enable_shared_memory_export`)[cite: 13].
-
-With **Step 2** wired up, you're ready for **Step 3** (`Piccolo-AX` `.mk` recipes). Would you like the updated `rmg-ax.mk`, `blastem-ax.mk`, and `cannonball-ax.mk` recipes next?
