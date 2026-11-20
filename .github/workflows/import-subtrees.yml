@@ -1,4 +1,5 @@
-name: Import Retro Engines into Subtrees
+name: Import Upstream Retro Subtrees
+
 on:
   workflow_dispatch:
 
@@ -6,23 +7,59 @@ permissions:
   contents: write
 
 jobs:
-  import:
+  import-subtrees:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Generation-X-AX
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Configure Git
+      - name: Configure Git and remote auth
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Import Upstream Engines
+          SCHEME="https"
+          REMOTE_URL="${SCHEME}://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote add origin-auth "${REMOTE_URL}"
+
+      - name: Import RMG subtree
         run: |
-          git subtree add --prefix=engines/rmg https://github.com master --squash
-          git subtree add --prefix=engines/blastem https://github.com master --squash
-          git subtree add --prefix=engines/cannonball https://github.com master --squash
-          git rm -f .github/workflows/import-subtrees.yml
-          git commit -m "chore: remove one-time subtree import workflow"
-          git push
+          set -euo pipefail
+          SCHEME="https"
+          UPSTREAM_RMG="${SCHEME}://github.com/Rosalie241/RMG.git"
+          if [ ! -d "engines/rmg" ]; then
+            git subtree add --prefix=engines/rmg "${UPSTREAM_RMG}" master --squash
+          else
+            echo "engines/rmg already exists; skipping"
+          fi
+
+      - name: Import BlastEm subtree
+        run: |
+          set -euo pipefail
+          SCHEME="https"
+          UPSTREAM_BLASTEM="${SCHEME}://github.com/libretro/blastem.git"
+          if [ ! -d "engines/blastem" ]; then
+            git subtree add --prefix=engines/blastem "${UPSTREAM_BLASTEM}" master --squash
+          else
+            echo "engines/blastem already exists; skipping"
+          fi
+
+      - name: Import Cannonball subtree
+        run: |
+          set -euo pipefail
+          SCHEME="https"
+          UPSTREAM_CANNONBALL="${SCHEME}://github.com/djyt/cannonball.git"
+          if [ ! -d "engines/cannonball" ]; then
+            git subtree add --prefix=engines/cannonball "${UPSTREAM_CANNONBALL}" master --squash
+          else
+            echo "engines/cannonball already exists; skipping"
+          fi
+
+      - name: Push imported subtrees to main
+        run: |
+          set -euo pipefail
+          git push origin-auth HEAD:main
