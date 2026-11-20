@@ -38,10 +38,6 @@ target_include_directories(ax_retro_bridge
     "${CMAKE_CURRENT_SOURCE_DIR}/shared"
 )
 
-if(AX_SDK_DIR AND EXISTS "${AX_SDK_DIR}/include")
-  target_include_directories(ax_retro_bridge PUBLIC "${AX_SDK_DIR}/include")
-endif()
-
 if(TARGET ax::core)
   target_link_libraries(ax_retro_bridge PUBLIC ax::core)
   target_compile_definitions(ax_retro_bridge PUBLIC AX_HAS_CORE_TARGET=1)
