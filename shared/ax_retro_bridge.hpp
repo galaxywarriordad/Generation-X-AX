@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -22,7 +23,7 @@ struct BridgeConfig {
 
 class RetroBridge {
 public:
-  RetroBridge() = default;
+  RetroBridge();
   ~RetroBridge();
 
   RetroBridge(const RetroBridge&) = delete;
@@ -42,6 +43,8 @@ public:
   [[nodiscard]] std::string_view engine_name() const noexcept;
 
 private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
   BridgeConfig config_{};
   bool initialized_{false};
   std::uint64_t last_frame_{0};
