@@ -4883,9 +4883,14 @@ bool Video_RenderTTScreen(void)
  */
 static void Video_DrawScreen(void)
 {
+	static uint64_t s_frame_idx = 0;
+
 	/* Skip frame if need to */
 	if (nVBLs % (nFrameSkips+1))
 		return;
+
+	ax_hatari_begin_frame(s_frame_idx);
+	const uint64_t t_start_us = Timing_GetTicks();
 
 	if (bUseVDIRes)
 	{
@@ -4908,6 +4913,9 @@ static void Video_DrawScreen(void)
 	}
 
 	ConvST_Refresh(false);
+
+	const double frame_ms = (double)(Timing_GetTicks() - t_start_us) / 1000.0;
+	ax_hatari_end_frame(s_frame_idx++, frame_ms);
 }
 
 
