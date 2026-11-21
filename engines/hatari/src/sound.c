@@ -149,7 +149,7 @@ const char Sound_fileid[] = "Hatari sound.c";
 #include "ymFormat.h"
 #include "avi_record.h"
 #include "clocks_timings.h"
-
+#include "ax_hatari_hook.h"
 
 
 /*--------------------------------------------------------------*/
@@ -1793,6 +1793,21 @@ void Sound_Update(uint64_t CPU_Clock)
 			           "some sound samples were not correctly emulated\n");
 		}
 		Sound_BufferIndexNeedReset = true;
+	}
+
+	if (Samples_Nbr > 0)
+	{
+		int start_idx = pos_write_prev & AUDIOMIXBUFFER_SIZE_MASK;
+		int first_chunk = AUDIOMIXBUFFER_SIZE - start_idx;
+		if (first_chunk >= Samples_Nbr)
+		{
+			ax_hatari_push_audio_s16(&AudioMixBuffer[start_idx][0], (size_t)Samples_Nbr);
+		}
+		else
+		{
+			ax_hatari_push_audio_s16(&AudioMixBuffer[start_idx][0], (size_t)first_chunk);
+			ax_hatari_push_audio_s16(&AudioMixBuffer[0][0], (size_t)(Samples_Nbr - first_chunk));
+		}
 	}
 
 	/* Allow audio callback function to occur again */
