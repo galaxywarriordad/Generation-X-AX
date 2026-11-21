@@ -51,6 +51,8 @@ std::string_view RetroBridge::engine_name() const noexcept {
       return "eduke32";
     case EngineId::Frontier:
       return "frontier";
+    case EngineId::Flycast:
+      return "flycast";
   }
   return "unknown";
 }
