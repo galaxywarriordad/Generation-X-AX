@@ -53,6 +53,8 @@ std::string_view RetroBridge::engine_name() const noexcept {
       return "frontier";
     case EngineId::Flycast:
       return "flycast";
+    case EngineId::Hatari:
+      return "hatari";
   }
   return "unknown";
 }
