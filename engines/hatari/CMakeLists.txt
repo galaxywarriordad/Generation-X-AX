@@ -11,7 +11,7 @@ if(APPLE AND CMAKE_BUILD_TYPE STREQUAL "Release")
 	set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Target minimum macOS version")
 endif(APPLE AND CMAKE_BUILD_TYPE STREQUAL "Release")
 
-project(Hatari C)
+project(Hatari C CXX)
 enable_testing()
 
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
