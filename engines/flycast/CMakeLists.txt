@@ -1075,6 +1075,8 @@ if(NOT LIBRETRO)
 endif()
 
 target_sources(${PROJECT_NAME} PRIVATE
+		core/ax_flycast_hook.cpp
+		core/ax_flycast_hook.hpp
 		core/build.h
 		core/chd.h
 		core/cheats.cpp
