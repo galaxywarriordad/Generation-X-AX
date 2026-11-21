@@ -1,0 +1,41 @@
+name: Import Hatari Subtree
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Upstream hatari/hatari branch or tag
+        required: false
+        default: main
+
+permissions:
+  contents: write
+
+jobs:
+  import-hatari:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Generation-X-AX
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Import or Update Hatari Subtree
+        env:
+          UPSTREAM_REF: ${{ github.event.inputs.ref || 'main' }}
+        run: |
+          git remote add hatari-upstream https://github.com/hatari/hatari.git || git remote set-url hatari-upstream https://github.com/hatari/hatari.git
+          git fetch hatari-upstream "${UPSTREAM_REF}" --depth=1
+          if [ -d "engines/hatari" ]; then
+            git subtree pull --prefix=engines/hatari hatari-upstream "${UPSTREAM_REF}" --squash -m "Update engines/hatari subtree from hatari/hatari (${UPSTREAM_REF})"
+          else
+            git subtree add --prefix=engines/hatari hatari-upstream "${UPSTREAM_REF}" --squash -m "Import engines/hatari subtree from hatari/hatari (${UPSTREAM_REF})"
+          fi
+
+      - name: Push Changes
+        run: git push origin main
