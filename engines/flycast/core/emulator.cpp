@@ -50,6 +50,8 @@
 #include "hw/sh4/sh4_interpreter.h"
 #include "hw/sh4/dyna/ngen.h"
 #include "oslib/i18n.h"
+#include "oslib/i18n.h"
+#include "ax_flycast_hook.hpp"
 
 settings_t settings;
 constexpr char const *BIOS_TITLE = "Dreamcast BIOS";
@@ -514,6 +516,7 @@ void Emulator::init()
 		verify(state == Init);
 		return;
 	}
+	ax::flycast_hook::Init();
 	// Default platform
 	setPlatform(DC_PLATFORM_DREAMCAST);
 
