@@ -917,6 +917,7 @@ void VulkanContext::CreateSwapChain()
 
 bool VulkanContext::init()
 {
+	ax::flycast_hook::PinVulkanThread();
 	std::vector<const char *> extensions;
 	extensions.push_back(vk::KHRSurfaceExtensionName);
 #if defined(USE_SDL)
