@@ -48,6 +48,7 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <vulkan/vulkan_format_traits.hpp>
 #include <algorithm>
 #include <cstring>
+#include "ax_flycast_hook.hpp"
 
 void ReInitOSD();
 
