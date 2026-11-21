@@ -60,7 +60,7 @@ const char Main_fileid[] = "Hatari main.c";
 #include "clocks_timings.h"
 
 #include "hatari-glue.h"
-
+#include "ax_hatari_hook.h"
 #include "falcon/dsp.h"
 #include "falcon/videl.h"
 
@@ -204,6 +204,7 @@ static void Main_InitSubsystems(void)
 	IoMem_Init();
 	NvRam_Init();
 	Sound_Init();
+	ax_hatari_init((uint32_t)nAudioFrequency);
 	Rtc_Init();
 
 	/* done as last, needs CPU & DSP running... */
@@ -233,6 +234,7 @@ static void Main_UnInitSubsystems(void)
 	if (Sound_AreWeRecording())
 		Sound_EndRecording();
 	Audio_UnInit();
+	ax_hatari_shutdown();
 	DSP_UnInit();
 	Screen_UnInit();
 	ConvST_UnInit();
