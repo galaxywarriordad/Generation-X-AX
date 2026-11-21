@@ -467,7 +467,7 @@ const char Video_fileid[] = "Hatari video.c";
 #include "clocks_timings.h"
 #include "utils.h"
 #include "falcon/nvram.h"
-
+#include "ax_hatari_hook.h"
 
 /* The border's mask allows to keep track of all the border tricks		*/
 /* applied to one video line. The masks for all lines are stored in the array	*/
