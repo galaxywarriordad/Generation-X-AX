@@ -1,0 +1,21 @@
+name: Import Flycast Subtree
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Upstream flyinghead/flycast branch or tag
+        required: false
+        default: master
+
+permissions:
+  contents: write
+
+jobs:
+  import-flycast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Generation-X-AX
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
