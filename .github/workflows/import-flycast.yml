@@ -19,3 +19,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Import or Update Flycast Subtree
+        env:
+          UPSTREAM_REF: ${{ github.event.inputs.ref || 'master' }}
+        run: |
+          git remote add flycast-upstream https://github.com/flyinghead/flycast.git || git remote set-url flycast-upstream https://github.com/flyinghead/flycast.git
+          git fetch flycast-upstream "${UPSTREAM_REF}" --depth=1
+          if [ -d "engines/flycast" ]; then
+            git subtree pull --prefix=engines/flycast flycast-upstream "${UPSTREAM_REF}" --squash -m "Update engines/flycast subtree from flyinghead/flycast (${UPSTREAM_REF})"
+          else
+            git subtree add --prefix=engines/flycast flycast-upstream "${UPSTREAM_REF}" --squash -m "Import engines/flycast subtree from flyinghead/flycast (${UPSTREAM_REF})"
+          fi
+
+      - name: Push Changes
+        run: git push origin main
