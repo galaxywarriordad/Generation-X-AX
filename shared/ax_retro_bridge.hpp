@@ -14,6 +14,7 @@ enum class EngineId : std::uint8_t {
   Cannonball = 2,
   EDuke32 = 3,
   Frontier = 4,
+  Flycast = 5,
 };
 
 struct BridgeConfig {
