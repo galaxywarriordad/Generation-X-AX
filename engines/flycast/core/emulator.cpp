@@ -50,7 +50,6 @@
 #include "hw/sh4/sh4_interpreter.h"
 #include "hw/sh4/dyna/ngen.h"
 #include "oslib/i18n.h"
-#include "oslib/i18n.h"
 #include "ax_flycast_hook.hpp"
 
 settings_t settings;
@@ -809,6 +808,7 @@ void Emulator::term()
 		state = Terminated;
 	}
 	addrspace::release();
+	ax::flycast_hook::Shutdown();
 }
 
 void Emulator::stop()
@@ -1012,6 +1012,7 @@ void Emulator::start()
 		getSh4Executor()->Start();
 		threadResult = std::async(std::launch::async, [this] {
 				ThreadName _("Flycast-emu");
+				ax::flycast_hook::PinJitThread();
 				InitAudio();
 
 				try {
@@ -1089,7 +1090,14 @@ bool Emulator::render()
 		return false;
 	if (state != Running)
 		return false;
-	return rend_single_frame(true); // FIXME stop flag?
+	static std::uint64_t s_frame_idx = 0;
+	const auto frame_start = std::chrono::steady_clock::now();
+	ax::flycast_hook::BeginFrame(s_frame_idx);
+	const bool rendered = rend_single_frame(true); // FIXME stop flag?
+	const double frame_ms = std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - frame_start).count();
+	ax::flycast_hook::EndFrame(s_frame_idx++, frame_ms);
+	return rendered;
 }
 
 void Emulator::vblank()
