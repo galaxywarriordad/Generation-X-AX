@@ -11,10 +11,16 @@ option(AX_BUILD_CANNONBALL "Build Cannonball (1986 OutRun) engine" ON)
 option(AX_BUILD_EDUKE32 "Build EDuke32 FPS engine" ON)
 option(AX_BUILD_FRONTIER "Build Frontier: Elite II engine" ON)
 option(AX_BUILD_FLYCAST "Build Flycast (Dreamcast / NAOMI / Atomiswave) engine" ON)
-option(AX_BUILD_HATARI "" ON)
+option(AX_BUILD_HATARI "Build Hatari (Atari ST) engine" ON)
 option(AX_FETCH_SDK "Fetch ax-sdk v1_36_1 if AX_SDK_DIR is not set" ON)
 
 set(AX_SDK_DIR "" CACHE PATH "Path to local ax-sdk checkout")
+
+if(NOT AX_SDK_DIR AND DEFINED ENV{AX_SDK_DIR} AND EXISTS "$ENV{AX_SDK_DIR}/CMakeLists.txt")
+  set(AX_SDK_DIR "$ENV{AX_SDK_DIR}" CACHE PATH "Path to local ax-sdk checkout" FORCE)
+elseif(NOT AX_SDK_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../ax-sdk/CMakeLists.txt")
+  set(AX_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ax-sdk" CACHE PATH "Path to local ax-sdk checkout" FORCE)
+endif()
 
 if(AX_SDK_DIR AND EXISTS "${AX_SDK_DIR}/CMakeLists.txt")
   add_subdirectory("${AX_SDK_DIR}" "${CMAKE_BINARY_DIR}/ax-sdk-build")
@@ -27,7 +33,7 @@ elseif(AX_FETCH_SDK)
     ax_sdk
     GIT_REPOSITORY "${_ax_proto}://${_ax_host}/${_ax_repo}"
     GIT_TAG "v1_36_1"
-    GIT_SHALLOW TRUE
+    GIT_SHALLOW FALSE
   )
   FetchContent_MakeAvailable(ax_sdk)
 endif()
@@ -52,22 +58,37 @@ endif()
 
 if(AX_BUILD_RMG AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/rmg/CMakeLists.txt")
   add_subdirectory(engines/rmg)
+  if(TARGET rmg)
+    target_link_libraries(rmg PRIVATE ax_retro_bridge)
+  endif()
 endif()
 
 if(AX_BUILD_BLASTEM AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/blastem/CMakeLists.txt")
   add_subdirectory(engines/blastem)
+  if(TARGET blastem)
+    target_link_libraries(blastem PRIVATE ax_retro_bridge)
+  endif()
 endif()
 
 if(AX_BUILD_CANNONBALL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/cannonball/cmake/CMakeLists.txt")
   add_subdirectory(engines/cannonball/cmake)
+  if(TARGET cannonball)
+    target_link_libraries(cannonball PRIVATE ax_retro_bridge)
+  endif()
 endif()
 
 if(AX_BUILD_EDUKE32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/eduke32/CMakeLists.txt")
   add_subdirectory(engines/eduke32)
+  if(TARGET eduke32)
+    target_link_libraries(eduke32 PRIVATE ax_retro_bridge)
+  endif()
 endif()
 
 if(AX_BUILD_FRONTIER AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/frontier/CMakeLists.txt")
   add_subdirectory(engines/frontier)
+  if(TARGET frontier)
+    target_link_libraries(frontier PRIVATE ax_retro_bridge)
+  endif()
 endif()
 
 if(AX_BUILD_FLYCAST AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/flycast/CMakeLists.txt")
@@ -100,3 +121,10 @@ if(AX_BUILD_HATARI AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/hatari/CMakeL
     target_link_libraries(hatari PRIVATE ax_retro_bridge)
   endif()
 endif()
+```[cite: 18]
+
+<ElicitationsGroup message="Ready for #5 of 5 — shall we finish with Cemu-Latte-AX next?">
+  <Elicitation label="5. Cemu-Latte CMake" query="next"/>
+  <Elicitation label="Review Generation-X CMake" query="Let me know if any engine target names in Generation-X-AX differ from rmg/blastem/cannonball/eduke32/frontier."/>
+  <Elicitation label="Check Piccolo spelling" query="Let's also note the Piccolo vs Picollo spelling check for your repos and scripts."/>
+</ElicitationsGroup>
