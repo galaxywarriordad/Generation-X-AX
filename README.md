@@ -60,15 +60,6 @@ Generation-X-AX/
 
 ---
 
-## ⚖️ Legal & ROM Ownership Policy
-
-In strict alignment with **The Silicon Preservation Society** policy and upstream licenses:
-
-* **Zero Copyrighted Assets Bundled:** This repository contains **no** copyrighted game ROMs, arcade PCB dumps, disc images, BIOS/TOS images, or proprietary assets.
-* **Original Hardware Required:** You **must legally own original Nintendo 64 cartridges, Sega Mega Drive cartridges, Sega OutRun arcade PCBs, Build Engine game data, *Frontier: Elite II* disks, Sega Dreamcast discs/carts, and/or Atari ST/TOS hardware** and dump your own files directly from your own hardware.
-
----
-
 ## 🔨 Building
 
 ### 1. Automatic `ax-sdk` Resolution
@@ -114,5 +105,13 @@ cmake --build build
 
 - **Main Switch Engine Fork (Forgejo):** [`galaxywarriordad/Eden-Espresso-Wave-AX`](https://git.eden-emu.dev/galaxywarriordad/Eden-Espresso-Wave-AX.git) — Deterministic Nintendo Switch fork tuned for `ax::sdk` core topology, Vulkan telemetry, and low-latency audio, kept aligned with upstream for frictionless PR cherry-picks.
 - **Upstream Ecosystem Hub (Forgejo):** [`eden-emu/eden`](https://git.eden-emu.dev/eden-emu/eden/) — Upstream Eden Switch emulator reference repository.
+
+---
+## ⚖️ Legal & ROM Ownership Policy
+
+In strict alignment with **The Silicon Preservation Society** policy and upstream licenses:
+
+* **Zero Copyrighted Assets Bundled:** This repository contains **no** copyrighted game ROMs, arcade PCB dumps, disc images, BIOS/TOS images, or proprietary assets.
+* **Original Hardware Required:** You **must legally own original Nintendo 64 cartridges, Sega Mega Drive cartridges, Sega OutRun arcade PCBs, Build Engine game data, *Frontier: Elite II* disks, Sega Dreamcast discs/carts, and/or Atari ST/TOS hardware** and dump your own files directly from your own hardware.
 
 ---
