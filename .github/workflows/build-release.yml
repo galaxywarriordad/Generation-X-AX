@@ -1,0 +1,94 @@
+name: Build Release Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "CMake build configuration"
+        type: choice
+        options:
+          - Release
+          - RelWithDebInfo
+        default: Release
+      build_hatari:
+        description: "Build Hatari (Atari ST)"
+        type: boolean
+        default: true
+      build_blastem:
+        description: "Build BlastEm (Sega Mega Drive)"
+        type: boolean
+        default: true
+      build_flycast:
+        description: "Build Flycast (Dreamcast / NAOMI)"
+        type: boolean
+        default: true
+      build_rmg:
+        description: "Build RMG (Nintendo 64)"
+        type: boolean
+        default: true
+      build_cannonball:
+        description: "Build Cannonball (OutRun)"
+        type: boolean
+        default: true
+      build_eduke32:
+        description: "Build EDuke32"
+        type: boolean
+        default: true
+      build_frontier:
+        description: "Build Frontier: Elite II"
+        type: boolean
+        default: true
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Generation-X-AX
+        uses: actions/checkout@v5
+        with:
+          submodules: "recursive"
+
+      - name: Free Runner Disk Space (~25 GB Reclaimed)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - name: Install System Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config git nasm \
+            libsdl2-dev libasound2-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libpng-dev zlib1g-dev libzstd-dev libreadline-dev libcapstone-dev \
+            libfreetype-dev libspeexdsp-dev libzip-dev libcurl4-openssl-dev \
+            libvulkan-dev glslang-tools
+
+      - name: Configure & Build Generation-X-AX Engines (Linux)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DAX_FETCH_SDK=ON \
+            -DAX_BUILD_HATARI=${{ inputs.build_hatari }} \
+            -DAX_BUILD_BLASTEM=${{ inputs.build_blastem }} \
+            -DAX_BUILD_FLYCAST=${{ inputs.build_flycast }} \
+            -DAX_BUILD_RMG=${{ inputs.build_rmg }} \
+            -DAX_BUILD_CANNONBALL=${{ inputs.build_cannonball }} \
+            -DAX_BUILD_EDUKE32=${{ inputs.build_eduke32 }} \
+            -DAX_BUILD_FRONTIER=${{ inputs.build_frontier }}
+          cmake --build build --parallel
+
+      - name: Stage Compiled Engine Binaries
+        run: |
+          mkdir -p dist/generation-x-ax-linux-x86_64
+          find build -maxdepth 4 -type f -executable \
+            \( -name "hatari" -o -name "blastem" -o -name "flycast" -o -name "RMG" -o -name "rmg" -o -name "cannonball" -o -name "eduke32" -o -name "frontier" \) \
+            -exec cp -f {} dist/generation-x-ax-linux-x86_64/ \;
+          ls -lh dist/generation-x-ax-linux-x86_64/
+
+      - name: Upload Linux Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: generation-x-ax-linux-x86_64
+          path: dist/generation-x-ax-linux-x86_64
+          retention-days: 14
