@@ -32,7 +32,7 @@ elseif(AX_FETCH_SDK)
   FetchContent_Declare(
     ax_sdk
     GIT_REPOSITORY "${_ax_proto}://${_ax_host}/${_ax_repo}"
-    GIT_TAG "v1_36_1"
+    GIT_TAG "v1_36_2"
     GIT_SHALLOW FALSE
   )
   FetchContent_MakeAvailable(ax_sdk)
@@ -121,10 +121,4 @@ if(AX_BUILD_HATARI AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/hatari/CMakeL
     target_link_libraries(hatari PRIVATE ax_retro_bridge)
   endif()
 endif()
-```[cite: 18]
 
-<ElicitationsGroup message="Ready for #5 of 5 — shall we finish with Cemu-Latte-AX next?">
-  <Elicitation label="5. Cemu-Latte CMake" query="next"/>
-  <Elicitation label="Review Generation-X CMake" query="Let me know if any engine target names in Generation-X-AX differ from rmg/blastem/cannonball/eduke32/frontier."/>
-  <Elicitation label="Check Piccolo spelling" query="Let's also note the Piccolo vs Picollo spelling check for your repos and scripts."/>
-</ElicitationsGroup>
