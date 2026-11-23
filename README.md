@@ -6,6 +6,25 @@
 
 **Generation-X `[AX]`** consolidates classic 1985–1998 arcade, console, and home-computer C/C++ engines behind a single shared C++20 hardware-abstraction adapter (`ax_retro_bridge`) powered by **`ax-sdk` (`ax::core`)**—delivering deterministic `2:3:1` physical-core isolation, HugeTLB/Large-Page fastmem, and zero-underrun USB DAC audio across **Windows 10/11** and bare-metal **`Piccolo [AX]`** (`Linux 6.12-rt`).
 
+# 🕹️ Bringing Amiga & Atari ST Bare-Metal Magic Back to Life
+
+What made the **Commodore Amiga** and **Atari ST** unforgettable wasn’t raw megahertz—it was deterministic hardware timing, zero OS interference, and audio silicon that punched far above its price tag. In 1985, while MS-DOS PCs were still beeping through a single piezo speaker, the Amiga’s **Paula** chip was pushing four hardware DMA-driven 8-bit PCM channels (28 kHz+ stereo) and the Atari ST’s **YM2149 PSG** was spitting out razor-sharp square-wave and noise envelopes—all locked to a `50 Hz` / `60 Hz` beam-raced vertical blank with zero background scheduler jitter.
+
+Together, we rebuilt that exact bare-metal experience on **Piccolo-AX** (`x86_64` Linux `6.12-rt` EROFS `toram`), mapping the legendary Amiga and Atari ST software pillars directly onto deterministic `[AX]` engines:
+
+| 🏛️ Classic Amiga / Atari ST Pillar | ✨ What Made It Legendary | ⚙️ Our Piccolo-AX Engine Mapping |
+| :--- | :--- | :--- |
+| **🎵 ProTracker / OctaMED / TCB Tracker**<br>*(Amiga `.MOD` & ST `.SNDH` Audio)* | Hardware DMA sample playback with zero CPU audio overhead and unmistakable stereo separation | **`FLAC_AX`** (`libopenmpt` + `libFLAC++`) — Bit-perfect `S32_LE` (44.1–384 kHz) & DoP (`DSD64`/`128`) transport pinned to **Core 0** (`SCHED_FIFO 80`) |
+| **🖥️ Commodore Amiga 500 / 1200 / CD32**<br>*(OCS / ECS / AGA Custom Chipset)* | Copper co-processor raster effects, Blitter sprite pipelines, and Paula 4-channel DMA sound | **`Amiberry-AX`** — Linked against `ax-sdk` for HugeTLB fastmem, `2:3:1` core pinning, and lockstep VBlank pacing |
+| **🎹 Atari 520ST / 1040STE**<br>*(68000 + YM2149 + STE DMA Sound)* | Crisp high-res productivity, MIDI ports, and iconic demo-scene rasters | **`Hatari-AX`** *(Generation-X-AX)* — Cycle-accurate 68000 & YM2149 execution isolated from OS interrupts |
+| **👾 Coin-Op Arcade & 16-Bit Crossover Hits**<br>*(CPS-1/2/3, Neo Geo, Sega System 16)* | The arcade boards Amiga and Atari ST owners dreamed of having at home | **`FinalBurn Neo`** (`libretro-fbneo`) — Added to Piccolo-AX's EmulationStation wheel (`es_systems_fbneo.cfg`) on **Cores 2–4** (`0x1C`) |
+
+---
+
+## ⚡ Why Piccolo-AX Runs and Sounds Better Than Any Standard Emulator Setup
+
+* 🎧 **Dedicated Audio Clock (`Core 0`, `0x01`, `SCHED_FIFO 80`):** Unlike desktop Windows or standard Batocera/Ubuntu builds where USB audio shares threads with the UI and kernel workers, Piccolo-AX isolates the ALSA `S32_LE` writer and USB DAC interrupts onto **Core 0**, eliminates PulseAudio/PipeWire resampling, and uses `SIGUSR1` DAC handoffs (`axGenerator.py`) so `FLAC_AX` and `Amiberry-AX`/`Hatari-AX` never fight over the DAC.
+* 🔒 **Lockstep `2:3:1` Execution:** **Core 1** (`0x02`) drives Vulkan/iGPU scanout, **Cores 2–4** (`0x1C`) execute cycle-accurate 68000/custom-chip emulation with HugeTLB fastmem (`ax-sdk`), and **Core 5** (`0x20`) handles background I/O—delivering rock-solid `50.00 Hz` PAL / `60.00 Hz` NTSC scrolling without audio crackles or micro-stutter.
 ---
 
 ## 🌐 Ecosystem Repository Network
