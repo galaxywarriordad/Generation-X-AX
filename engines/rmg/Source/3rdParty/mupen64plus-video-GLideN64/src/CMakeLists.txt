@@ -8,7 +8,6 @@ option(MUPENPLUSAPI_GLIDENUI "Set to ON for GLideNUI for Mupen64Plus" ${MUPENPLU
 option(GLIDENUI_QT6 "Set to ON to use Qt6 for GLideNUI" ${GLIDENUI_QT6})
 option(MESA "Set to ON to disable Raspberry Pi autodetection" ${MESA})
 option(VERO4K "Set to ON if targeting a Vero4k" ${VERO4K})
-option(ANDROID "Set to ON if targeting an Android device" ${ANDROID})
 option(GL_PROFILE "Set to ON to turn on GL profiling" ${GL_PROFILE})
 option(DEBUG_DUMP "Set to ON to enable debug dump" ${DEBUG_DUMP})
 option(NO_OSD "Set to ON to disable OSD text drawing" ${NO_OSD})
@@ -265,11 +264,7 @@ if(MUPENPLUSAPI)
 
   set(GLideN64_SOURCES_WIN ${GLideN64_SOURCES_UNIX}
   )
-  if (ANDROID)
-      set(GLideN64_DLL_NAME libmupen64plus-video-GLideN64)
-  else()
-      set(GLideN64_DLL_NAME mupen64plus-video-GLideN64)
-  endif()
+  set(GLideN64_DLL_NAME mupen64plus-video-GLideN64)
 else(MUPENPLUSAPI)
   if(UNIX)
     message(FATAL_ERROR "UNIX build requires MUPENPLUSAPI!")
@@ -369,78 +364,19 @@ if(VERO4K)
    )
 endif(VERO4K)
 
-if(ANDROID)
-   add_definitions(-DOS_ANDROID -DEGL_EGLEXT_PROTOTYPES -DEGL)
-   set(EGL ON)
-
-   if(ANDROID_ABI STREQUAL "armeabi-v7a" OR ANDROID_ABI STREQUAL "arm64-v8a")
-       set(NEON_OPT ON)
-       set(VEC4_OPT ON)
-       set(CRC_NEON ON)
-   elseif(ANDROID_ABI STREQUAL "x86" OR ANDROID_ABI STREQUAL "x86_64")
-       set(CRC_OPT ON)
-       set(VEC4_OPT ON)
-   endif()
-
-   list(APPEND GLideN64_SOURCES
-           Log_android.cpp
-           Graphics/OpenGLContext/opengl_ColorBufferReaderWithEGLImage.cpp
-           Graphics/OpenGLContext/GraphicBuffer/PrivateApi/GraphicBuffer.cpp
-           Graphics/OpenGLContext/GraphicBuffer/PrivateApi/libhardware.cpp
-           Graphics/OpenGLContext/GraphicBuffer/PublicApi/android_hardware_buffer_compat.cpp
-           Graphics/OpenGLContext/GraphicBuffer/GraphicBufferWrapper.cpp
-           )
-
-   list(REMOVE_ITEM GLideN64_SOURCES
-           Log.cpp
-           )
-
-   find_library( # Defines the name of the path variable that stores the
-           # location of the NDK library.
-           LOG_LIB
-
-           # Specifies the name of the NDK library that
-           # CMake needs to locate.
-           log )
-endif(ANDROID)
-
 if(NOT NO_OSD)
-  if(ANDROID)
-    set( FREETYPE_INCLUDE_DIRS "${ANDROID_LIB_PATH}/freetype/include" )
-  elseif(UNIX OR BCMHOST)
+  if(UNIX OR BCMHOST)
     set( FREETYPE_INCLUDE_DIRS "/usr/include/freetype2/" )
   else(UNIX OR BCMHOST)
     set( ENV{FREETYPE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../freetype )
-  endif(ANDROID)
+  endif(UNIX OR BCMHOST)
 
-  if(ANDROID)
-      add_library( ANDROID_FREETYPE
-              SHARED
-              IMPORTED )
-
-      if( GLIDEN64_BUILD_TYPE STREQUAL "Debug")
-          set( BUILD_VARIANT "debug" )
-      else()
-          set( BUILD_VARIANT "release" )
-      endif()
-
-      set_target_properties( # Specifies the target library.
-              ANDROID_FREETYPE
-
-              # Specifies the parameter you want to define.
-              PROPERTIES IMPORTED_LOCATION
-
-              # Provides the path to the library you want to import.
-              ${ANDROID_LIB_PATH}/libs/${BUILD_VARIANT}/${ANDROID_ABI}/libfreetype.so)
-      set(FREETYPE_LIBRARIES ANDROID_FREETYPE)
-  else(ANDROID)
-      FIND_PACKAGE( Freetype REQUIRED )
-      # presume a qt build linked to freetype
-      # will be used with mingw
-      if (NOT MUPENPLUSAPI AND MINGW)
-        set(FREETYPE_LIBRARIES "")
-      endif()
-  endif(ANDROID)
+  FIND_PACKAGE( Freetype REQUIRED )
+  # presume a qt build linked to freetype
+  # will be used with mingw
+  if (NOT MUPENPLUSAPI AND MINGW)
+    set(FREETYPE_LIBRARIES "")
+  endif()
 
   include_directories( ${FREETYPE_INCLUDE_DIRS} )
 else()
@@ -588,7 +524,7 @@ elseif(GLIDEN64_BUILD_TYPE)
 	)
 endif(is_multi_config)
 
-if(USE_IPO AND GLIDEN64_BUILD_TYPE STREQUAL "Release")
+if(USE_IPO AND (GLIDEN64_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo"))
   include(CheckIPOSupported)
   check_ipo_supported(RESULT result)
   if(result)
@@ -596,43 +532,46 @@ if(USE_IPO AND GLIDEN64_BUILD_TYPE STREQUAL "Release")
     set_property(TARGET ${GLideN64_DLL_NAME} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -O3")
   endif()
-endif(USE_IPO AND GLIDEN64_BUILD_TYPE STREQUAL "Release")
+endif()
 
 if(GLIDEN64_BUILD_TYPE STREQUAL "Debug")
   if(SDL)
         if (NOHQ)
-	  target_link_libraries(${GLideN64_DLL_NAME} PRIVATE ${OPENGL_LIBRARIES} ${SDL_LIBRARIES} ${FREETYPE_LIBRARIES} ${LOG_LIB} ${GLIDENUI_LIBRARIES} osald )
+	  target_link_libraries(${GLideN64_DLL_NAME} PRIVATE ${OPENGL_LIBRARIES} ${SDL_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLIDENUI_LIBRARIES} osald )
 	else (NOHQ)
-	  target_link_libraries(${GLideN64_DLL_NAME} PRIVATE ${OPENGL_LIBRARIES} ${SDL_LIBRARIES} ${FREETYPE_LIBRARIES} ${LOG_LIB} ${GLIDENUI_LIBRARIES} osald GLideNHQd )
+	  target_link_libraries(${GLideN64_DLL_NAME} PRIVATE ${OPENGL_LIBRARIES} ${SDL_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLIDENUI_LIBRARIES} osald GLideNHQd )
 	endif (NOHQ)
   else(SDL)
 	if (NOHQ)
-	  target_link_libraries(${GLideN64_DLL_NAME} PRIVATE ${OPENGL_LIBRARIES} ${FREETYPE_LIBRARIES} ${LOG_LIB} ${GLIDENUI_LIBRARIES} osald )
+	  target_link_libraries(${GLideN64_DLL_NAME} PRIVATE ${OPENGL_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLIDENUI_LIBRARIES} osald )
 	else (NOHQ)
-	  target_link_libraries(${GLideN64_DLL_NAME} PRIVATE ${OPENGL_LIBRARIES} ${FREETYPE_LIBRARIES} ${LOG_LIB} ${GLIDENUI_LIBRARIES} osald GLideNHQd )
+	  target_link_libraries(${GLideN64_DLL_NAME} PRIVATE ${OPENGL_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLIDENUI_LIBRARIES} osald GLideNHQd )
 	endif (NOHQ)
   endif(SDL)
 else(GLIDEN64_BUILD_TYPE STREQUAL "Debug")
   if(SDL)
         if (NOHQ)
-          target_link_libraries(${GLideN64_DLL_NAME} ${OPENGL_LIBRARIES} ${SDL_LIBRARIES} ${FREETYPE_LIBRARIES} ${LOG_LIB} ${GLIDENUI_LIBRARIES} osal )
+          target_link_libraries(${GLideN64_DLL_NAME} ${OPENGL_LIBRARIES} ${SDL_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLIDENUI_LIBRARIES} osal )
         else (NOHQ)
-          target_link_libraries(${GLideN64_DLL_NAME} ${OPENGL_LIBRARIES} ${SDL_LIBRARIES} ${FREETYPE_LIBRARIES} ${LOG_LIB} ${GLIDENUI_LIBRARIES} osal GLideNHQ )
+          target_link_libraries(${GLideN64_DLL_NAME} ${OPENGL_LIBRARIES} ${SDL_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLIDENUI_LIBRARIES} osal GLideNHQ )
         endif (NOHQ)
   else(SDL)
         if (NOHQ)
-          target_link_libraries(${GLideN64_DLL_NAME} ${OPENGL_LIBRARIES} ${FREETYPE_LIBRARIES} ${LOG_LIB} ${GLIDENUI_LIBRARIES} osal )
+          target_link_libraries(${GLideN64_DLL_NAME} ${OPENGL_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLIDENUI_LIBRARIES} osal )
         else (NOHQ)
-          target_link_libraries(${GLideN64_DLL_NAME} ${OPENGL_LIBRARIES} ${FREETYPE_LIBRARIES} ${LOG_LIB} ${GLIDENUI_LIBRARIES} osal GLideNHQ )
+          target_link_libraries(${GLideN64_DLL_NAME} ${OPENGL_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLIDENUI_LIBRARIES} osal GLideNHQ )
         endif (NOHQ)
   endif(SDL)
 endif(GLIDEN64_BUILD_TYPE STREQUAL "Debug")
 
-if(UNIX AND NOT APPLE AND NOT ANDROID)
+if(UNIX AND NOT APPLE)
 	install(TARGETS ${GLideN64_DLL_NAME}
 		DESTINATION "${CMAKE_INSTALL_LIBDIR}/mupen64plus"
 	)
 	install(FILES ../ini/${PROJECT_NAME}.custom.ini
 		DESTINATION "${CMAKE_INSTALL_DATADIR}/mupen64plus"
 	)
-endif(UNIX AND NOT APPLE AND NOT ANDROID)
+endif(UNIX AND NOT APPLE)
+```[cite: 16]
+
+Which file in `Generation-X-AX` or `Piccolo-AX` would you like to inspect next in your browser?
