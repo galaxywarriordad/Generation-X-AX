@@ -41,7 +41,7 @@ on:
       build_frontier:
         description: "Build Frontier: Elite II"
         type: boolean
-        default: false
+        default: true
 
 jobs:
   build-linux:
@@ -51,7 +51,14 @@ jobs:
       - name: Checkout Generation-X-AX
         uses: actions/checkout@v5
         with:
-          submodules: "recursive"
+          submodules: false
+
+      - name: Initialize Valid Git Submodules (Best-Effort)
+        run: |
+          if [ -f .gitmodules ]; then
+            git submodule sync --recursive || true
+            git submodule update --init --force --depth=1 --recursive || echo "Warning: skipping unmapped/broken subtree submodules"
+          fi
 
       - name: Free Runner Disk Space (~25 GB Reclaimed)
         run: |
@@ -99,7 +106,7 @@ jobs:
         run: |
           mkdir -p dist/generation-x-ax-linux-x86_64
           find build -maxdepth 4 -type f -executable \
-            \( -name "hatari" -o -name "blastem" -o -name "flycast" -o -name "RMG" -o -name "rmg" -o -name "cannonball" -o -name "eduke32" -o -name "frontier" \) \
+            \( -name "hatari" -o -name "blastem" -o -name "flycast" -o -name "RMG" -o -name "rmg" -o -name "cannonball" -o -name "eduke32" -o -name "frontier" -o -name "frontier-fe2" \) \
             -exec cp -f {} dist/generation-x-ax-linux-x86_64/ \;
           ls -lh dist/generation-x-ax-linux-x86_64/
 
