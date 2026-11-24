@@ -1,31 +1,41 @@
-#include "ax_frontier_bridge.h"
-
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-
-#if defined(__linux__)
-#include <pthread.h>
-#include <sched.h>
-#endif
-
-#if defined(AX_HAS_CORE_TARGET)
-#include "ax/core/ax_core.hpp"
-#endif
+#include "ax_midi_mpk3.hpp"
+#include <memory>
 
 namespace {
 
-uint64_t DomainMaskFor231(ax_frontier_domain_t domain) {
-  switch (domain) {
-    case AX_FRONTIER_DOMAIN_AUDIO_TIMING:
-      return (1ULL << 0); // Core 0 (0x01)
-    case AX_FRONTIER_DOMAIN_VULKAN_SUBMISSION:
-      return (1ULL << 1); // Core 1 (0x02)
-    case AX_FRONTIER_DOMAIN_GUEST_JIT:
-      return ((1ULL << 2) | (1ULL << 3) | (1ULL << 4)); // Cores 2-4 (0x1C)
-    case AX_FRONTIER_DOMAIN_HOUSEKEEPING:
-    default:
-      return (1ULL << 5); // Core 5 (0x20)
+std::unique_ptr<ax::retro::MpkMini3FrontierBridge> g_mpk3_bridge;
+
+ax_frontier_midi_cmd_t MapMidiCommand(ax::retro::FrontierCommandId id) noexcept {
+  switch (id) {
+    case ax::retro::FrontierCommandId::TrimRollYaw:               return AX_FRONTIER_MIDI_CMD_TRIM_ROLL_YAW;
+    case ax::retro::FrontierCommandId::TrimPitch:                 return AX_FRONTIER_MIDI_CMD_TRIM_PITCH;
+    case ax::retro::FrontierCommandId::ThrottleTrim:              return AX_FRONTIER_MIDI_CMD_THROTTLE_TRIM;
+    case ax::retro::FrontierCommandId::CycleDriveMode:            return AX_FRONTIER_MIDI_CMD_CYCLE_DRIVE_MODE;
+    case ax::retro::FrontierCommandId::ZoomRadar:                 return AX_FRONTIER_MIDI_CMD_ZOOM_RADAR;
+    case ax::retro::FrontierCommandId::CycleHudMfd:               return AX_FRONTIER_MIDI_CMD_CYCLE_HUD_MFD;
+    case ax::retro::FrontierCommandId::LaserCapBias:              return AX_FRONTIER_MIDI_CMD_LASER_CAP_BIAS;
+    case ax::retro::FrontierCommandId::ShieldDriveBias:           return AX_FRONTIER_MIDI_CMD_SHIELD_DRIVE_BIAS;
+    case ax::retro::FrontierCommandId::StepTimeCompression:       return AX_FRONTIER_MIDI_CMD_STEP_TIME_COMPRESSION;
+    case ax::retro::FrontierCommandId::ResetTimeCompression1x:    return AX_FRONTIER_MIDI_CMD_RESET_TIME_COMPRESSION_1X;
+    case ax::retro::FrontierCommandId::MasterAudioTrim:           return AX_FRONTIER_MIDI_CMD_MASTER_AUDIO_TRIM;
+    case ax::retro::FrontierCommandId::FirePrimaryLaser:          return AX_FRONTIER_MIDI_CMD_FIRE_PRIMARY_LASER;
+    case ax::retro::FrontierCommandId::LaunchMissile:             return AX_FRONTIER_MIDI_CMD_LAUNCH_MISSILE;
+    case ax::retro::FrontierCommandId::TargetNearestHostile:      return AX_FRONTIER_MIDI_CMD_TARGET_NEAREST_HOSTILE;
+    case ax::retro::FrontierCommandId::CycleNextTarget:           return AX_FRONTIER_MIDI_CMD_CYCLE_NEXT_TARGET;
+    case ax::retro::FrontierCommandId::ToggleAutopilot:           return AX_FRONTIER_MIDI_CMD_TOGGLE_AUTOPILOT;
+    case ax::retro::FrontierCommandId::EngageDockingComputer:     return AX_FRONTIER_MIDI_CMD_ENGAGE_DOCKING_COMPUTER;
+    case ax::retro::FrontierCommandId::MatchTargetVelocity:       return AX_FRONTIER_MIDI_CMD_MATCH_TARGET_VELOCITY;
+    case ax::retro::FrontierCommandId::HyperspaceJump:            return AX_FRONTIER_MIDI_CMD_HYPERSPACE_JUMP;
+    case ax::retro::FrontierCommandId::JettisonOrEscapeGuarded:  return AX_FRONTIER_MIDI_CMD_JETTISON_OR_ESCAPE_GUARDED;
+    case ax::retro::FrontierCommandId::ToggleLandingGear:         return AX_FRONTIER_MIDI_CMD_TOGGLE_LANDING_GEAR;
+    case ax::retro::FrontierCommandId::ActivateEcm:               return AX_FRONTIER_MIDI_CMD_ACTIVATE_ECM;
+    case ax::retro::FrontierCommandId::OpenStarMap:               return AX_FRONTIER_MIDI_CMD_OPEN_STAR_MAP;
+    case ax::retro::FrontierCommandId::OpenSystemMap:             return AX_FRONTIER_MIDI_CMD_OPEN_SYSTEM_MAP;
+    case ax::retro::FrontierCommandId::OpenShipStatus:            return AX_FRONTIER_MIDI_CMD_OPEN_SHIP_STATUS;
+    case ax::retro::FrontierCommandId::ToggleTelemetryOverlay:    return AX_FRONTIER_MIDI_CMD_TOGGLE_TELEMETRY_OVERLAY;
+    case ax::retro::FrontierCommandId::CameraOrMfdPreset:         return AX_FRONTIER_MIDI_CMD_CAMERA_OR_MFD_PRESET;
+    case ax::retro::FrontierCommandId::None:
+    default:                                                      return AX_FRONTIER_MIDI_CMD_NONE;
   }
 }
 
@@ -33,77 +43,42 @@ uint64_t DomainMaskFor231(ax_frontier_domain_t domain) {
 
 extern "C" {
 
-int ax_frontier_pin_thread(ax_frontier_domain_t domain, uintptr_t native_thread_handle) {
-  const uint64_t mask = DomainMaskFor231(domain);
-#if defined(__linux__)
-  pthread_t target = (native_thread_handle != 0)
-      ? reinterpret_cast<pthread_t>(native_thread_handle)
-      : pthread_self();
-  cpu_set_t cpuset;
-  CPU_ZERO(&cpuset);
-  for (int cpu = 0; cpu < 64; ++cpu) {
-    if (mask & (1ULL << cpu)) {
-      CPU_SET(cpu, &cpuset);
-    }
-  }
-  return pthread_setaffinity_np(target, sizeof(cpu_set_t), &cpuset);
-#else
-  (void)native_thread_handle;
-  (void)mask;
-  return 0;
-#endif
+int ax_frontier_midi_init(const char* alsa_device, uint64_t listener_core_mask, size_t max_events_per_frame) {
+  ax::retro::MpkMini3Config cfg{};
+  cfg.device = (alsa_device && alsa_device[0] != '\0') ? alsa_device : "hw:CARD=MPKmini3,DEV=0";
+  cfg.listener_core_mask = (listener_core_mask != 0) ? listener_core_mask : 0x20ULL; // Core 5
+  cfg.max_events_per_frame = (max_events_per_frame > 0) ? max_events_per_frame : 32;
+
+  g_mpk3_bridge = std::make_unique<ax::retro::MpkMini3FrontierBridge>(cfg);
+  return g_mpk3_bridge->Start() ? 0 : -1;
 }
 
-void ax_frontier_report_audio_metrics(uint32_t sample_rate, uint32_t buffer_frames, uint32_t underruns) {
-  (void)sample_rate;
-  (void)buffer_frames;
-  (void)underruns;
+void ax_frontier_midi_shutdown(void) {
+  if (g_mpk3_bridge) {
+    g_mpk3_bridge->Stop();
+    g_mpk3_bridge.reset();
+  }
 }
 
-int ax_frontier_fastmem_alloc(size_t size, uint32_t flags, ax_frontier_arena_t* out_arena) {
-  if (!out_arena || size == 0) {
-    return -1;
+size_t ax_frontier_midi_drain_frame(ax_frontier_midi_handler_fn handler, void* user_data, size_t max_events) {
+  if (!g_mpk3_bridge || !handler) {
+    return 0;
   }
-  const size_t aligned_size = ((size + 63u) / 64u) * 64u;
-  void* mem = std::aligned_alloc(64, aligned_size);
-  if (!mem) {
-    return -1;
-  }
-  std::memset(mem, 0, size);
-  out_arena->ptr = mem;
-  out_arena->size = size;
-  out_arena->flags = flags;
-  return 0;
-}
-
-void ax_frontier_fastmem_free(ax_frontier_arena_t* arena) {
-  if (!arena || !arena->ptr) {
-    return;
-  }
-  std::free(arena->ptr);
-  arena->ptr = nullptr;
-  arena->size = 0;
-  arena->flags = 0;
+  return g_mpk3_bridge->DrainFrameEvents(
+      [handler, user_data](const ax::retro::FrontierInputCommand& cmd) {
+        ax_frontier_midi_event_t out{};
+        out.command = MapMidiCommand(cmd.command);
+        out.axis_value = cmd.axis_value;
+        out.step_delta = cmd.step_delta;
+        out.raw_data1 = cmd.raw_data1;
+        out.raw_data2 = cmd.raw_data2;
+        out.sustain_held = cmd.sustain_held ? 1u : 0u;
+        out.timestamp_ns = cmd.timestamp_ns;
+        if (out.command != AX_FRONTIER_MIDI_CMD_NONE) {
+          handler(&out, user_data);
+        }
+      },
+      max_events);
 }
 
 } // extern "C"
-
-#if defined(AX_FRONTIER_STUB_MAIN)
-int main(int argc, char** argv) {
-  (void)argc;
-  (void)argv;
-
-  const int pin_rc = ax_frontier_pin_thread(AX_FRONTIER_DOMAIN_GUEST_JIT, 0);
-  ax_frontier_report_audio_metrics(48000, 256, 0);
-
-  ax_frontier_arena_t arena{};
-  const int alloc_rc = ax_frontier_fastmem_alloc(4096, 0, &arena);
-  if (alloc_rc == 0 && arena.ptr) {
-    std::memset(arena.ptr, 0xA5, 64);
-    ax_frontier_fastmem_free(&arena);
-  }
-
-  std::printf("[frontier-fe2 stub] pin_rc=%d alloc_rc=%d\n", pin_rc, alloc_rc);
-  return (alloc_rc == 0) ? 0 : 1;
-}
-#endif
