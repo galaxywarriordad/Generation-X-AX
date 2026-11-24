@@ -1,4 +1,3 @@
-// Generation-X-AX/src/snes/genx_snes_main.cpp
 #include "ax_snes_adapter.hpp"
 
 #include <csignal>
