@@ -42,6 +42,10 @@ on:
         description: "Build Frontier: Elite II"
         type: boolean
         default: true
+      build_snes:
+        description: "Build Generation-X-AX SNES adapter (genx-snes-ax)"
+        type: boolean
+        default: true
 
 jobs:
   build-linux:
@@ -92,15 +96,20 @@ jobs:
             -DAX_BUILD_RMG=${{ inputs.build_rmg }} \
             -DAX_BUILD_CANNONBALL=${{ inputs.build_cannonball }} \
             -DAX_BUILD_EDUKE32=${{ inputs.build_eduke32 }} \
-            -DAX_BUILD_FRONTIER=${{ inputs.build_frontier }}
+            -DAX_BUILD_FRONTIER=${{ inputs.build_frontier }} \
+            -DGENX_BUILD_SNES=${{ inputs.build_snes }}
           cmake --build build --parallel
 
       - name: Stage Compiled Engine Binaries
         run: |
           mkdir -p dist/generation-x-ax-linux-x86_64
           find build -maxdepth 4 -type f -executable \
-            \( -name "hatari" -o -name "blastem" -o -name "flycast" -o -name "RMG" -o -name "rmg" -o -name "cannonball" -o -name "eduke32" -o -name "frontier" -o -name "frontier-fe2" \) \
+            \( -name "hatari" -o -name "blastem" -o -name "flycast" -o -name "RMG" -o -name "rmg" -o -name "cannonball" -o -name "eduke32" -o -name "frontier" -o -name "frontier-fe2" -o -name "genx-snes-ax" \) \
             -exec cp -f {} dist/generation-x-ax-linux-x86_64/ \;
+          if [ -f "scripts/ax-snes-launch.sh" ]; then
+            cp -f scripts/ax-snes-launch.sh dist/generation-x-ax-linux-x86_64/
+            chmod +x dist/generation-x-ax-linux-x86_64/ax-snes-launch.sh
+          fi
           ls -lh dist/generation-x-ax-linux-x86_64/
 
       - name: Upload Linux Release Artifacts
