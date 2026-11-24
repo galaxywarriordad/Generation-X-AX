@@ -1,9 +1,13 @@
 #include "ax_snes_adapter.hpp"
+#include "snes_core_host.hpp"
 
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
+
+namespace fs = std::filesystem;
 
 namespace {
 volatile std::sig_atomic_t g_stop_flag = 0;
@@ -24,9 +28,10 @@ std::string ParseArg(int argc, char** argv, const std::string& flag) {
 } // namespace
 
 int main(int argc, char** argv) {
-    const std::string config_path = ParseArg(argc, argv, "--config").empty()
+    const std::string config_arg = ParseArg(argc, argv, "--config");
+    const std::string config_path = config_arg.empty()
         ? "/userdata/system/piccolo-ax/ax_engine.ini"
-        : ParseArg(argc, argv, "--config");
+        : config_arg;
     const std::string rom_path = ParseArg(argc, argv, "--rom");
     const std::string sram_path = ParseArg(argc, argv, "--sram");
     const std::string preset_override = ParseArg(argc, argv, "--preset");
@@ -55,16 +60,25 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    while (!g_stop_flag) {
-        const int ppm = adapter.ComputeRateGuardPpm(50);
-        (void)ppm;
-        break;
-    }
+    const auto& cfg = adapter.config();
+    const fs::path rom_fs(rom_path);
+    const std::string stem = rom_fs.stem().string();
+    const std::string staged_rom = cfg.shm_staging_enabled
+        ? (fs::path(cfg.shm_rom_dir) / rom_fs.filename()).string()
+        : rom_path;
+    const std::string staged_sram = !sram_path.empty()
+        ? sram_path
+        : (cfg.shm_staging_enabled
+            ? (fs::path(cfg.shm_save_dir) / (stem + ".srm")).string()
+            : (fs::path(cfg.persistent_save_dir) / (stem + ".srm")).string());
+
+    const bool loop_ok = ax::genx::snes::RunSnesCoreLoop(
+        adapter, staged_rom, staged_sram, &g_stop_flag);
 
     if (!adapter.ShutdownSession()) {
         std::cerr << "[genx-snes-ax] Warning: save flush or DAC lock release reported an issue.\n";
         return 1;
     }
 
-    return 0;
+    return loop_ok ? 0 : 1;
 }
