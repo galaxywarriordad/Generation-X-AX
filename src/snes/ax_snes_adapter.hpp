@@ -18,6 +18,7 @@ struct SnesRuntimeConfig {
     std::string engine_backend{"bsnes"};
     SnesPreset preset{SnesPreset::StockCycleExact};
     bool auto_detect_coprocessor{true};
+    std::string hardware_profile{"x86_64_coffeelake_maxwell_231"};
 
     // 2:3:1 topology mapping (x86_64_coffeelake_maxwell_231)
     int audio_core{0};
@@ -57,12 +58,28 @@ struct SnesRuntimeConfig {
     bool atomic_flush_on_exit{true};
     std::string sync_archive_hook{"K01piccolo-sync"};
 
+    // Shared-memory telemetry (/dev/shm/ax_telemetry)
+    bool telemetry_enabled{true};
+    uint32_t telemetry_publish_interval_ms{16};
+    bool telemetry_export_jitter_hist{true};
+
     // Preset overrides
     uint32_t cpu_overclock_pct{100};
     uint32_t coprocessor_overclock_pct{100};
     int runahead_frames{0};
     bool mid_scanline_strict{true};
     bool thread_boost_coprocessor{false};
+};
+
+struct SnesTelemetrySnapshot {
+    uint64_t frames_stepped{0};
+    int last_ring_fill_pct{50};
+    int last_rate_guard_ppm{0};
+    uint64_t rate_guard_adjustments{0};
+    uint64_t audio_underruns{0};
+    uint64_t vram_reaps{0};
+    uint64_t bar1_stalls{0};
+    bool sdk_telemetry_active{false};
 };
 
 class AxSnesAdapter {
@@ -80,12 +97,19 @@ public:
 
     bool StartSession();
     int ComputeRateGuardPpm(int current_ring_fill_pct) const noexcept;
+    void RecordFrameTelemetry(uint64_t frame_index,
+                              int ring_fill_pct,
+                              int rate_guard_ppm,
+                              bool audio_underrun = false) noexcept;
+    SnesTelemetrySnapshot GetTelemetrySnapshot() const noexcept;
     bool ShutdownSession();
 
     const SnesRuntimeConfig& config() const noexcept { return cfg_; }
     bool is_running() const noexcept { return running_.load(std::memory_order_acquire); }
 
 private:
+    bool InitSdkRuntimeAndTelemetry();
+    void ShutdownSdkTelemetry();
     bool AcquireDacLock();
     void ReleaseDacLock();
     bool StageRomAndSavesToShm();
@@ -102,6 +126,13 @@ private:
     std::string staged_sram_path_{};
     int dac_lock_fd_{-1};
     std::atomic<bool> running_{false};
+
+    std::atomic<uint64_t> frames_stepped_{0};
+    std::atomic<int> last_ring_fill_pct_{50};
+    std::atomic<int> last_rate_guard_ppm_{0};
+    std::atomic<uint64_t> rate_guard_adjustments_{0};
+    std::atomic<uint64_t> audio_underruns_{0};
+    std::atomic<bool> sdk_telemetry_ready_{false};
 };
 
 } // namespace ax::genx::snes
