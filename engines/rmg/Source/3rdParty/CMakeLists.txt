@@ -9,8 +9,22 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(NETPLAY "Enable netplay support via SDL3_net" OFF)
 option(USE_CCACHE "Use ccache compiler launcher when available" ON)
 option(USE_ANGRYLION "Build angrylion-plus software RDP plugin" OFF)
+option(RMG_BUILD_QT_UI "Build Qt6 UI components for RMG video plugins" OFF)
+option(AX_USE_IPO "Enable IPO/LTO for RMG 3rdParty sub-projects when supported" ON)
 option(AX_ENABLE_SKYLAKELOCK "Lock x86_64 builds to -march=skylake -mbmi -mbmi2" ON)
 option(AX_ENABLE_DETERMINISTIC "Enable deterministic build flags and prefix maps" ON)
+
+if(RMG_BUILD_QT_UI)
+  set(_RMG_QT_BOOL ON)
+else()
+  set(_RMG_QT_BOOL OFF)
+endif()
+
+if(AX_USE_IPO AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(_RMG_IPO_BOOL ON)
+else()
+  set(_RMG_IPO_BOOL OFF)
+endif()
 
 ProcessorCount(NPROC)
 if(NPROC EQUAL 0)
@@ -137,7 +151,7 @@ if(NETPLAY)
       set(SDL3NET_CFLAGS "-DUSE_SDL3NET")
       if(SDL3_net_CFLAGS)
         string(JOIN " " _sdl3net_inc ${SDL3_net_CFLAGS})
-        set(SDL3NET_CFLAGS "${SDL3_net_CFLAGS} ${_sdl3net_inc}")
+        set(SDL3NET_CFLAGS "${SDL3NET_CFLAGS} ${_sdl3net_inc}")
       endif()
     else()
       message(WARNING "NETPLAY requested, but sdl3-net was not found via pkg-config; building 3rdParty with NETPLAY=0.")
@@ -213,7 +227,7 @@ ExternalProject_Add(mupen64plus-rsp-parallel
   SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mupen64plus-rsp-parallel"
   INSTALL_COMMAND ""
   BUILD_IN_SOURCE FALSE
-  CMAKE_ARGS -DUSE_IPO=OFF ${CMAKE_CONFIGURE_ARGS}
+  CMAKE_ARGS -DUSE_IPO=${_RMG_IPO_BOOL} -DPARALLEL_RSP_FAST_MATH=OFF ${CMAKE_CONFIGURE_ARGS}
   BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/mupen64plus-rsp-parallel"
   BUILD_BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/mupen64plus-rsp-parallel/mupen64plus-rsp-parallel.${SO_EXT}"
 )
@@ -254,7 +268,7 @@ if(USE_ANGRYLION)
     SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mupen64plus-video-angrylion-plus"
     INSTALL_COMMAND ""
     BUILD_IN_SOURCE FALSE
-    CMAKE_ARGS -DBUILD_MUPEN64PLUS=ON -DBUILD_PROJECT64=OFF -DUSE_QT5=OFF -DUSE_IPO=OFF ${CMAKE_CONFIGURE_ARGS}
+    CMAKE_ARGS -DBUILD_MUPEN64PLUS=ON -DBUILD_PROJECT64=OFF -DUSE_QT5=OFF -DUSE_IPO=${_RMG_IPO_BOOL} ${CMAKE_CONFIGURE_ARGS}
     BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/mupen64plus-video-angrylion-plus"
     BUILD_BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/mupen64plus-video-angrylion-plus/mupen64plus-video-angrylion-plus.${SO_EXT}"
   )
@@ -264,7 +278,7 @@ ExternalProject_Add(mupen64plus-video-GLideN64
   SOURCE_DIR "${GLIDEN64_DIR}"
   INSTALL_COMMAND ""
   BUILD_IN_SOURCE FALSE
-  CMAKE_ARGS -DMUPENPLUSAPI=ON -DMUPENPLUSAPI_GLIDENUI=ON -DGLIDENUI_QT6=ON -DUSE_IPO=OFF -DUSE_SYSTEM_LIBS=ON ${CMAKE_CONFIGURE_ARGS}
+  CMAKE_ARGS -DMUPENPLUSAPI=ON -DMUPENPLUSAPI_GLIDENUI=${_RMG_QT_BOOL} -DGLIDENUI_QT6=${_RMG_QT_BOOL} -DUSE_IPO=${_RMG_IPO_BOOL} -DUSE_SYSTEM_LIBS=ON ${CMAKE_CONFIGURE_ARGS}
   SOURCE_SUBDIR ./src/
   BINARY_DIR "${GLIDEN64_BUILD_DIR}"
   BUILD_BYPRODUCTS "${GLIDEN64_BUILD_DIR}/plugin/${GLIDEN64_BUILD_TYPE}/mupen64plus-video-GLideN64.${SO_EXT}"
@@ -274,7 +288,7 @@ ExternalProject_Add(mupen64plus-video-parallel
   SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mupen64plus-video-parallel"
   INSTALL_COMMAND ""
   BUILD_IN_SOURCE FALSE
-  CMAKE_ARGS -DCONFIG_GUI=ON -DUSE_IPO=OFF ${CMAKE_CONFIGURE_ARGS}
+  CMAKE_ARGS -DCONFIG_GUI=${_RMG_QT_BOOL} -DUSE_IPO=${_RMG_IPO_BOOL} ${CMAKE_CONFIGURE_ARGS}
   BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/mupen64plus-video-parallel"
   BUILD_BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/mupen64plus-video-parallel/mupen64plus-video-parallel.${SO_EXT}"
 )
