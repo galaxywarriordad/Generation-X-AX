@@ -1,3 +1,19 @@
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum ax_frontier_domain_e {
+  AX_FRONTIER_DOMAIN_AUDIO_TIMING = 0,
+  AX_FRONTIER_DOMAIN_VULKAN_RENDER = 1,
+  AX_FRONTIER_DOMAIN_GUEST_JIT = 2,
+  AX_FRONTIER_DOMAIN_HOUSEKEEPING = 3
+} ax_frontier_domain_t;
+
 typedef enum ax_frontier_midi_cmd_e {
   AX_FRONTIER_MIDI_CMD_NONE = 0,
   AX_FRONTIER_MIDI_CMD_TRIM_ROLL_YAW,
@@ -41,6 +57,15 @@ typedef struct ax_frontier_midi_event_s {
 
 typedef void (*ax_frontier_midi_handler_fn)(const ax_frontier_midi_event_t* ev, void* user_data);
 
+int ax_frontier_bridge_init(void);
+void ax_frontier_bridge_shutdown(void);
+int ax_frontier_pin_thread(ax_frontier_domain_t domain, int lane_index);
+
 int ax_frontier_midi_init(const char* alsa_device, uint64_t listener_core_mask, size_t max_events_per_frame);
 void ax_frontier_midi_shutdown(void);
 size_t ax_frontier_midi_drain_frame(ax_frontier_midi_handler_fn handler, void* user_data, size_t max_events);
+size_t ax_frontier_step_frame(ax_frontier_midi_handler_fn handler, void* user_data, size_t max_events);
+
+#ifdef __cplusplus
+}
+#endif
