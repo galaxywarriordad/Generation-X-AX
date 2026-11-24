@@ -9,8 +9,10 @@
 #include <filesystem>
 #include <iostream>
 #include <sched.h>
+#include <sstream>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -37,6 +39,18 @@ bool ParseBool(const std::string& val, bool fallback) {
     if (val == "true" || val == "1" || val == "yes" || val == "on") return true;
     if (val == "false" || val == "0" || val == "no" || val == "off") return false;
     return fallback;
+}
+
+std::vector<int> ParseCoreList(const std::string& csv, const std::vector<int>& fallback) {
+    std::vector<int> result;
+    std::stringstream ss(csv);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        const std::string token = Trim(item);
+        if (token.empty()) continue;
+        result.push_back(std::atoi(token.c_str()));
+    }
+    return result.empty() ? fallback : result;
 }
 
 SnesPreset ParsePreset(const std::string& name) {
@@ -81,109 +95,134 @@ AxSnesAdapter::~AxSnesAdapter() {
     ReleaseDacLock();
 }
 
-bool AxSnesAdapter::Initialize(const std::string& config_path, const std::string& rom_path) {
+bool AxSnesAdapter::Initialize(const std::string& config_path,
+                               const std::string& rom_path,
+                               const std::string& preset_override,
+                               const std::string& sram_override) {
     rom_path_ = rom_path;
+    sram_override_ = sram_override;
 
-    // Note: In full ax-sdk v1_36_2 builds, ax::LoadEngineConfig() parses
-    // ax_engine.ini and binds hardware_profiles.json (x86_64_coffeelake_maxwell_231).
-    // This standalone-safe INI reader mirrors those exact [snes] and [snes.presets.*] keys.
     std::FILE* fp = std::fopen(config_path.c_str(), "r");
     if (!fp) {
         std::cerr << "[ax-snes] Could not open config '" << config_path
                   << "', using deterministic defaults.\n";
-        return !rom_path_.empty();
+    } else {
+        std::string current_section;
+        std::string active_preset_name = "stock_cycle_exact";
+        char buf[1024];
+
+        while (std::fgets(buf, sizeof(buf), fp)) {
+            std::string line = Trim(StripInlineComment(buf));
+            if (line.empty()) continue;
+
+            if (line.front() == '[' && line.back() == ']') {
+                current_section = Trim(line.substr(1, line.size() - 2));
+                continue;
+            }
+
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+
+            const std::string key = Trim(line.substr(0, eq));
+            std::string val = Trim(line.substr(eq + 1));
+            if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
+                val = val.substr(1, val.size() - 2);
+            }
+
+            if (current_section == "snes") {
+                if (key == "enabled") cfg_.enabled = ParseBool(val, cfg_.enabled);
+                else if (key == "engine_backend") cfg_.engine_backend = val;
+                else if (key == "profile_preset") active_preset_name = val;
+                else if (key == "auto_detect_coprocessor") cfg_.auto_detect_coprocessor = ParseBool(val, true);
+                else if (key == "audio_core") cfg_.audio_core = std::atoi(val.c_str());
+                else if (key == "audio_sched_fifo_priority") cfg_.audio_sched_fifo_priority = std::atoi(val.c_str());
+                else if (key == "video_core") cfg_.video_core = std::atoi(val.c_str());
+                else if (key == "emu_cores") cfg_.emu_cores = ParseCoreList(val, cfg_.emu_cores);
+                else if (key == "housekeeping_core") cfg_.housekeeping_core = std::atoi(val.c_str());
+                else if (key == "alsa_device") cfg_.alsa_device = val;
+                else if (key == "alsa_format") cfg_.alsa_format = val;
+                else if (key == "alsa_rate") cfg_.alsa_rate = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
+                else if (key == "alsa_period_frames") cfg_.alsa_period_frames = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
+                else if (key == "alsa_buffer_periods") cfg_.alsa_buffer_periods = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
+                else if (key == "alsa_disable_resample") cfg_.alsa_disable_resample = ParseBool(val, true);
+                else if (key == "dac_lock_path") cfg_.dac_lock_path = val;
+                else if (key == "video_backend") cfg_.video_backend = val;
+                else if (key == "integer_scaling") cfg_.integer_scaling = ParseBool(val, true);
+                else if (key == "vsync_mode") cfg_.vsync_mode = val;
+                else if (key == "max_vram_budget_gib") cfg_.max_vram_budget_gib = std::atof(val.c_str());
+                else if (key == "hard_vram_ceiling_gib") cfg_.hard_vram_ceiling_gib = std::atof(val.c_str());
+                else if (key == "rate_guard_enabled") cfg_.rate_guard_enabled = ParseBool(val, true);
+                else if (key == "rate_guard_max_ppm") cfg_.rate_guard_max_ppm = std::atoi(val.c_str());
+                else if (key == "rate_guard_ring_target_pct") cfg_.rate_guard_ring_target_pct = std::atoi(val.c_str());
+                else if (key == "rate_guard_hysteresis_pct") cfg_.rate_guard_hysteresis_pct = std::atoi(val.c_str());
+                else if (key == "shm_staging_enabled") cfg_.shm_staging_enabled = ParseBool(val, true);
+                else if (key == "shm_rom_dir") cfg_.shm_rom_dir = val;
+                else if (key == "shm_save_dir") cfg_.shm_save_dir = val;
+                else if (key == "persistent_save_dir") cfg_.persistent_save_dir = val;
+                else if (key == "persistent_rom_dir") cfg_.persistent_rom_dir = val;
+                else if (key == "atomic_flush_on_exit") cfg_.atomic_flush_on_exit = ParseBool(val, true);
+                else if (key == "sync_archive_hook") cfg_.sync_archive_hook = val;
+            }
+        }
+
+        if (!preset_override.empty()) {
+            active_preset_name = preset_override;
+        }
+        cfg_.preset = ParsePreset(active_preset_name);
+        const std::string target_section = PresetSectionName(cfg_.preset);
+
+        std::rewind(fp);
+        current_section.clear();
+        while (std::fgets(buf, sizeof(buf), fp)) {
+            std::string line = Trim(StripInlineComment(buf));
+            if (line.empty()) continue;
+            if (line.front() == '[' && line.back() == ']') {
+                current_section = Trim(line.substr(1, line.size() - 2));
+                continue;
+            }
+            if (current_section != target_section) continue;
+
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            const std::string key = Trim(line.substr(0, eq));
+            std::string val = Trim(line.substr(eq + 1));
+            if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
+                val = val.substr(1, val.size() - 2);
+            }
+
+            if (key == "cpu_overclock_pct") cfg_.cpu_overclock_pct = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
+            else if (key == "coprocessor_overclock_pct") cfg_.coprocessor_overclock_pct = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
+            else if (key == "runahead_frames") cfg_.runahead_frames = std::atoi(val.c_str());
+            else if (key == "mid_scanline_strict") cfg_.mid_scanline_strict = ParseBool(val, true);
+            else if (key == "thread_boost_coprocessor") cfg_.thread_boost_coprocessor = ParseBool(val, false);
+        }
+
+        std::fclose(fp);
     }
-
-    std::string current_section;
-    std::string active_preset_name = "stock_cycle_exact";
-    char buf[1024];
-
-    while (std::fgets(buf, sizeof(buf), fp)) {
-        std::string line = Trim(StripInlineComment(buf));
-        if (line.empty()) continue;
-
-        if (line.front() == '[' && line.back() == ']') {
-            current_section = Trim(line.substr(1, line.size() - 2));
-            continue;
-        }
-
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-
-        const std::string key = Trim(line.substr(0, eq));
-        std::string val = Trim(line.substr(eq + 1));
-        if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
-            val = val.substr(1, val.size() - 2);
-        }
-
-        if (current_section == "snes") {
-            if (key == "enabled") cfg_.enabled = ParseBool(val, cfg_.enabled);
-            else if (key == "engine_backend") cfg_.engine_backend = val;
-            else if (key == "profile_preset") active_preset_name = val;
-            else if (key == "auto_detect_coprocessor") cfg_.auto_detect_coprocessor = ParseBool(val, true);
-            else if (key == "audio_core") cfg_.audio_core = std::atoi(val.c_str());
-            else if (key == "audio_sched_fifo_priority") cfg_.audio_sched_fifo_priority = std::atoi(val.c_str());
-            else if (key == "video_core") cfg_.video_core = std::atoi(val.c_str());
-            else if (key == "housekeeping_core") cfg_.housekeeping_core = std::atoi(val.c_str());
-            else if (key == "alsa_device") cfg_.alsa_device = val;
-            else if (key == "alsa_format") cfg_.alsa_format = val;
-            else if (key == "alsa_rate") cfg_.alsa_rate = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
-            else if (key == "alsa_period_frames") cfg_.alsa_period_frames = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
-            else if (key == "alsa_buffer_periods") cfg_.alsa_buffer_periods = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
-            else if (key == "alsa_disable_resample") cfg_.alsa_disable_resample = ParseBool(val, true);
-            else if (key == "dac_lock_path") cfg_.dac_lock_path = val;
-            else if (key == "rate_guard_enabled") cfg_.rate_guard_enabled = ParseBool(val, true);
-            else if (key == "rate_guard_max_ppm") cfg_.rate_guard_max_ppm = std::atoi(val.c_str());
-            else if (key == "rate_guard_ring_target_pct") cfg_.rate_guard_ring_target_pct = std::atoi(val.c_str());
-            else if (key == "rate_guard_hysteresis_pct") cfg_.rate_guard_hysteresis_pct = std::atoi(val.c_str());
-            else if (key == "shm_staging_enabled") cfg_.shm_staging_enabled = ParseBool(val, true);
-            else if (key == "shm_rom_dir") cfg_.shm_rom_dir = val;
-            else if (key == "shm_save_dir") cfg_.shm_save_dir = val;
-            else if (key == "persistent_save_dir") cfg_.persistent_save_dir = val;
-            else if (key == "persistent_rom_dir") cfg_.persistent_rom_dir = val;
-            else if (key == "atomic_flush_on_exit") cfg_.atomic_flush_on_exit = ParseBool(val, true);
-        }
-    }
-
-    cfg_.preset = ParsePreset(active_preset_name);
-    const std::string target_section = PresetSectionName(cfg_.preset);
-
-    // Second pass for active preset section overrides
-    std::rewind(fp);
-    current_section.clear();
-    while (std::fgets(buf, sizeof(buf), fp)) {
-        std::string line = Trim(StripInlineComment(buf));
-        if (line.empty()) continue;
-        if (line.front() == '[' && line.back() == ']') {
-            current_section = Trim(line.substr(1, line.size() - 2));
-            continue;
-        }
-        if (current_section != target_section) continue;
-
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        const std::string key = Trim(line.substr(0, eq));
-        std::string val = Trim(line.substr(eq + 1));
-
-        if (key == "cpu_overclock_pct") cfg_.cpu_overclock_pct = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
-        else if (key == "coprocessor_overclock_pct") cfg_.coprocessor_overclock_pct = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
-        else if (key == "runahead_frames") cfg_.runahead_frames = std::atoi(val.c_str());
-        else if (key == "thread_boost_coprocessor") cfg_.thread_boost_coprocessor = ParseBool(val, false);
-    }
-
-    std::fclose(fp);
 
     if (!cfg_.enabled) {
         std::cerr << "[ax-snes] SNES target is disabled in ax_engine.ini.\n";
         return false;
     }
 
-    // Enforce cycle-exact integrity on stock_cycle_exact
     if (cfg_.preset == SnesPreset::StockCycleExact) {
         cfg_.cpu_overclock_pct = 100;
         cfg_.coprocessor_overclock_pct = 100;
         cfg_.runahead_frames = 0;
+        cfg_.mid_scanline_strict = true;
         cfg_.thread_boost_coprocessor = false;
+    } else if (cfg_.preset == SnesPreset::LowLatencyInput) {
+        if (cfg_.runahead_frames <= 0) {
+            cfg_.runahead_frames = 1;
+        }
+        if (cfg_.alsa_buffer_periods > 3) {
+            cfg_.alsa_buffer_periods = 3;
+        }
+    } else if (cfg_.preset == SnesPreset::CoprocessorBoost) {
+        cfg_.thread_boost_coprocessor = true;
+        if (cfg_.coprocessor_overclock_pct < 125) {
+            cfg_.coprocessor_overclock_pct = 125;
+        }
     }
 
     return !rom_path_.empty();
@@ -221,8 +260,15 @@ void AxSnesAdapter::ReleaseDacLock() {
 }
 
 bool AxSnesAdapter::StageRomAndSavesToShm() {
+    PinThreadToCore(cfg_.housekeeping_core);
+
+    const fs::path rom_src(rom_path_);
+    const std::string stem = rom_src.stem().string();
+    const fs::path sram_persist = fs::path(cfg_.persistent_save_dir) / (stem + ".srm");
+
     if (!cfg_.shm_staging_enabled) {
         staged_rom_path_ = rom_path_;
+        staged_sram_path_ = sram_override_.empty() ? sram_persist.string() : sram_override_;
         return true;
     }
 
@@ -231,20 +277,21 @@ bool AxSnesAdapter::StageRomAndSavesToShm() {
     fs::create_directories(cfg_.shm_save_dir, ec);
     if (ec) return false;
 
-    const fs::path rom_src(rom_path_);
     const fs::path rom_dst = fs::path(cfg_.shm_rom_dir) / rom_src.filename();
-    if (!CopyFileAtomic(rom_src, rom_dst)) {
-        std::cerr << "[ax-snes] Failed staging ROM to /dev/shm: " << rom_dst << "\n";
-        return false;
+    if (rom_src != rom_dst) {
+        if (!CopyFileAtomic(rom_src, rom_dst)) {
+            std::cerr << "[ax-snes] Failed staging ROM to /dev/shm: " << rom_dst << "\n";
+            return false;
+        }
     }
     staged_rom_path_ = rom_dst.string();
 
-    const std::string stem = rom_src.stem().string();
-    const fs::path sram_persist = fs::path(cfg_.persistent_save_dir) / (stem + ".srm");
-    const fs::path sram_shm = fs::path(cfg_.shm_save_dir) / (stem + ".srm");
+    const fs::path sram_shm = sram_override_.empty()
+        ? (fs::path(cfg_.shm_save_dir) / (stem + ".srm"))
+        : fs::path(sram_override_);
     staged_sram_path_ = sram_shm.string();
 
-    if (fs::exists(sram_persist)) {
+    if (fs::exists(sram_persist) && sram_persist != sram_shm) {
         if (!CopyFileAtomic(sram_persist, sram_shm)) {
             std::cerr << "[ax-snes] Failed staging SRAM to /dev/shm.\n";
             return false;
@@ -254,22 +301,64 @@ bool AxSnesAdapter::StageRomAndSavesToShm() {
 }
 
 bool AxSnesAdapter::FlushSavesAtomicallyToStorage() {
-    if (!cfg_.shm_staging_enabled || !cfg_.atomic_flush_on_exit) return true;
+    if (!cfg_.atomic_flush_on_exit) return true;
     if (staged_sram_path_.empty() || !fs::exists(staged_sram_path_)) return true;
 
     const fs::path sram_persist = fs::path(cfg_.persistent_save_dir) / fs::path(staged_sram_path_).filename();
+    if (staged_sram_path_ == sram_persist.string()) return true;
+
     return CopyFileAtomic(staged_sram_path_, sram_persist);
 }
 
-void AxSnesAdapter::ApplyCoreAffinities() {
+void AxSnesAdapter::RunSyncArchiveHook() {
+    if (cfg_.sync_archive_hook != "K01piccolo-sync") return;
+    const char* hook_path = "/etc/init.d/K01piccolo-sync";
+    if (::access(hook_path, X_OK) != 0) return;
+
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        ::execl(hook_path, hook_path, "save", static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+    if (pid > 0) {
+        int status = 0;
+        while (::waitpid(pid, &status, 0) < 0) {
+            if (errno != EINTR) break;
+        }
+    }
+}
+
+void AxSnesAdapter::PinThreadToCore(int core_id) {
+    if (core_id < 0 || core_id >= CPU_SETSIZE) return;
     cpu_set_t set;
     CPU_ZERO(&set);
-    for (int c : cfg_.emu_cores) {
+    CPU_SET(core_id, &set);
+    ::sched_setaffinity(0, sizeof(set), &set);
+}
+
+void AxSnesAdapter::PinThreadToCores(const std::vector<int>& cores) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    for (int c : cores) {
         if (c >= 0 && c < CPU_SETSIZE) {
             CPU_SET(c, &set);
         }
     }
     ::sched_setaffinity(0, sizeof(set), &set);
+}
+
+void AxSnesAdapter::ApplySessionSchedulingAndAffinity() {
+    PinThreadToCore(cfg_.audio_core);
+    if (cfg_.audio_sched_fifo_priority > 0) {
+        struct sched_param sp{};
+        sp.sched_priority = cfg_.audio_sched_fifo_priority;
+        ::sched_setscheduler(0, SCHED_FIFO, &sp);
+    }
+
+    struct sched_param normal_sp{};
+    normal_sp.sched_priority = 0;
+    ::sched_setscheduler(0, SCHED_OTHER, &normal_sp);
+    PinThreadToCores(cfg_.emu_cores);
 }
 
 int AxSnesAdapter::ComputeRateGuardPpm(int current_ring_fill_pct) const noexcept {
@@ -280,7 +369,7 @@ int AxSnesAdapter::ComputeRateGuardPpm(int current_ring_fill_pct) const noexcept
         return 0;
     }
 
-    const int raw_ppm = delta * 4;
+    const int raw_ppm = delta * 3;
     return std::clamp(raw_ppm, -cfg_.rate_guard_max_ppm, cfg_.rate_guard_max_ppm);
 }
 
@@ -288,14 +377,16 @@ bool AxSnesAdapter::StartSession() {
     if (!StageRomAndSavesToShm()) return false;
     if (!AcquireDacLock()) return false;
 
-    ApplyCoreAffinities();
+    ApplySessionSchedulingAndAffinity();
     running_.store(true, std::memory_order_release);
     return true;
 }
 
 bool AxSnesAdapter::ShutdownSession() {
     running_.store(false, std::memory_order_release);
+    PinThreadToCore(cfg_.housekeeping_core);
     const bool flushed = FlushSavesAtomicallyToStorage();
+    RunSyncArchiveHook();
     ReleaseDacLock();
     return flushed;
 }
