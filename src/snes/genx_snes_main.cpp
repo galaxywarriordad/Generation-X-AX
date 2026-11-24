@@ -28,6 +28,7 @@ int main(int argc, char** argv) {
         ? "/userdata/system/piccolo-ax/ax_engine.ini"
         : ParseArg(argc, argv, "--config");
     const std::string rom_path = ParseArg(argc, argv, "--rom");
+    const std::string sram_path = ParseArg(argc, argv, "--sram");
     const std::string preset_override = ParseArg(argc, argv, "--preset");
 
     if (rom_path.empty()) {
@@ -40,13 +41,13 @@ int main(int argc, char** argv) {
     std::signal(SIGUSR1, HandleSignal);
 
     ax::genx::snes::AxSnesAdapter adapter;
-    if (!adapter.Initialize(config_path, rom_path)) {
+    if (!adapter.Initialize(config_path, rom_path, preset_override, sram_path)) {
         std::cerr << "[genx-snes-ax] Initialization failed.\n";
         return 1;
     }
 
     if (!preset_override.empty()) {
-        std::cerr << "[genx-snes-ax] Preset override requested: " << preset_override << "\n";
+        std::cerr << "[genx-snes-ax] Active preset: " << preset_override << "\n";
     }
 
     if (!adapter.StartSession()) {
