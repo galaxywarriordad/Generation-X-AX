@@ -81,7 +81,6 @@ LIBZOBJS=$(BUNDLED_LIBZ)
 endif
 
 ifeq ($(OS),Darwin)
-#This should really be based on whether or not the C compiler is clang rather than based on the OS
 CFLAGS+= -Wno-logical-op-parentheses
 endif
 ifdef PORTABLE
@@ -131,9 +130,9 @@ ifdef DEBUG
 OPT:=-g3 -O0
 else
 ifdef NOLTO
-OPT:=-O2
+OPT:=-O3
 else
-OPT:=-O2 -flto
+OPT:=-O3 -flto
 endif #NOLTO
 endif #DEBUG
 endif #OPT
@@ -167,7 +166,6 @@ ifndef CPU
 CPU:=$(shell uname -m)
 endif
 
-#OpenBSD uses different names for these architectures
 ifeq ($(CPU),amd64)
 CPU:=x86_64
 else
@@ -180,7 +178,7 @@ TRANSOBJS=gen.o backend.o $(MEM) arena.o tern.o
 M68KOBJS=68kinst.o
 
 ifdef NEW_CORE
-Z80OBJS=z80.o z80inst.o 
+Z80OBJS=z80.o z80inst.o
 M68KOBJS+= m68k.o
 CFLAGS+= -DNEW_CORE
 else
@@ -196,7 +194,7 @@ endif
 endif
 endif
 AUDIOOBJS=ym2612.o psg.o wave.o vgm.o event_log.o render_audio.o
-CONFIGOBJS=config.o tern.o util.o paths.o 
+CONFIGOBJS=config.o tern.o util.o paths.o
 NUKLEAROBJS=$(FONT) nuklear_ui/blastem_nuklear.o nuklear_ui/sfnt.o
 RENDEROBJS=ppm.o controller_info.o
 ifdef USE_FBDEV
@@ -204,7 +202,7 @@ RENDEROBJS+= render_fbdev.o
 else
 RENDEROBJS+= render_sdl.o
 endif
-	
+
 ifdef NOZLIB
 CFLAGS+= -DDISABLE_ZLIB
 else
@@ -218,7 +216,7 @@ MAINOBJS=blastem.o system.o genesis.o debug.o gdb_remote.o vdp.o $(RENDEROBJS) i
 LIBOBJS=libblastem.o system.o genesis.o debug.o gdb_remote.o vdp.o io.o romdb.o hash.o xband.o realtec.o \
 	i2c.o nor.o sega_mapper.o multi_game.o megawifi.o $(NET) serialize.o $(TERMINAL) $(CONFIGOBJS) gst.o \
 	$(M68KOBJS) $(TRANSOBJS) $(AUDIOOBJS) saves.o jcart.o rom.db.o gen_player.o $(LIBZOBJS)
-	
+
 ifdef NONUKLEAR
 CFLAGS+= -DDISABLE_NUKLEAR
 else
@@ -228,6 +226,18 @@ endif
 ifeq ($(CPU),x86_64)
 CFLAGS+=-DX86_64 -m64
 LDFLAGS+=-m64
+ifdef AX_SKYLAKELOCK
+CFLAGS+= -march=skylake -mbmi -mbmi2
+LDFLAGS+= -march=skylake -mbmi -mbmi2
+endif
+ifdef AX_DETERMINISTIC
+CFLAGS+= -ffile-prefix-map=.=.
+ifneq ($(OS),Windows)
+ifneq ($(OS),Darwin)
+LDFLAGS+= -Wl,--build-id=sha1
+endif
+endif
+endif
 else
 ifeq ($(CPU),i686)
 CFLAGS+=-DX86_32 -m32
@@ -277,7 +287,7 @@ libblastem.$(SO) : $(LIBOBJS)
 blastem$(EXE) : $(MAINOBJS)
 	$(CC) -o $@ $^ $(LDFLAGS) $(PROFFLAGS)
 	$(FIXUP) ./$@
-	
+
 blastjag$(EXE) : jaguar.o jag_video.o $(RENDEROBJS) serialize.o $(M68KOBJS) $(TRANSOBJS) $(CONFIGOBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
@@ -286,7 +296,7 @@ termhelper : termhelper.o
 
 dis$(EXE) : dis.o 68kinst.o tern.o vos_program_module.o
 	$(CC) -o $@ $^ $(OPT)
-	
+
 jagdis : jagdis.o jagcpu.o tern.o
 	$(CC) -o $@ $^
 
@@ -326,7 +336,7 @@ test_x86 : test_x86.o gen_x86.o gen.o
 
 test_arm : test_arm.o gen_arm.o mem.o gen.o
 	$(CC) -o test_arm test_arm.o gen_arm.o mem.o gen.o
-	
+
 test_int_timing : test_int_timing.o vdp.o
 	$(CC) -o $@ $^
 
@@ -338,7 +348,7 @@ offsets : offsets.c z80_to_x86.h m68k_core.h
 
 vos_prog_info : vos_prog_info.o vos_program_module.o
 	$(CC) -o vos_prog_info vos_prog_info.o vos_program_module.o
-	
+
 m68k.c : m68k.cpu cpu_dsl.py
 	./cpu_dsl.py -d call $< > $@
 
@@ -353,7 +363,7 @@ m68k.c : m68k.cpu cpu_dsl.py
 
 %.o : %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
-  
+
 %.o : %.m
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -377,7 +387,7 @@ font_interlace_variable.tiles : font_interlace_variable.png
 button.tiles : button.png
 font.tiles : font.png
 
-menu.bin : font_interlace_variable.tiles arrow.tiles cursor.tiles button.tiles font.tiles
+menu.bin : font_interlace_variable.tiles arrow.tiles cursor.tiles button.png font.png
 
 clean :
 	rm -rf $(ALL) trans ztestrun ztestgen *.o nuklear_ui/*.o zlib/*.o
