@@ -1,4 +1,3 @@
-# Generation-X-AX/src/snes/CMakeLists.txt
 add_library(ax_genx_snes STATIC
     ax_snes_adapter.cpp
 )
