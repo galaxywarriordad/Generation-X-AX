@@ -37,12 +37,14 @@ public:
                    SnesFramePacingState& out_state) override {
         if (!loaded_) return false;
 
+        const auto t0 = std::chrono::steady_clock::now();
         const double ppm_scale = 1.0 - (static_cast<double>(rate_guard_ppm) / 1'000'000.0);
         const auto base_period = std::chrono::microseconds(16639);
         const auto paced_period = std::chrono::microseconds(
             std::max<long long>(1000, static_cast<long long>(base_period.count() * ppm_scale)));
 
         std::this_thread::sleep_for(paced_period);
+        const auto t1 = std::chrono::steady_clock::now();
 
         ++frame_counter_;
         const int wave = static_cast<int>((frame_counter_ % 17) - 8);
@@ -50,6 +52,8 @@ public:
             cfg.rate_guard_ring_target_pct + wave, 0, 100);
 
         out_state.frame_index = frame_counter_;
+        out_state.last_frametime_us = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
         out_state.ring_fill_pct = fill_pct;
         out_state.rate_guard_ppm = rate_guard_ppm;
         out_state.coprocessor_boost_active = cfg.thread_boost_coprocessor;
@@ -102,7 +106,8 @@ bool RunSnesCoreLoop(AxSnesAdapter& adapter,
             return false;
         }
         ring_fill_pct = state.ring_fill_pct;
-        adapter.RecordFrameTelemetry(state.frame_index, ring_fill_pct, ppm, false);
+        adapter.RecordFrameTelemetry(
+            state.frame_index, state.last_frametime_us, ring_fill_pct, ppm, false);
     }
 
     engine->UnloadCartridge();
