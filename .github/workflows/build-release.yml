@@ -53,13 +53,6 @@ jobs:
         with:
           submodules: false
 
-      - name: Initialize Valid Git Submodules (Best-Effort)
-        run: |
-          if [ -f .gitmodules ]; then
-            git submodule sync --recursive || true
-            git submodule update --init --force --depth=1 --recursive || echo "Warning: skipping unmapped/broken subtree submodules"
-          fi
-
       - name: Free Runner Disk Space (~25 GB Reclaimed)
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
@@ -114,5 +107,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: generation-x-ax-linux-x86_64
-          path: dist/generation-x-ax-linux-x86_64
+          path: dist/generation-x-ax-linux-x86_4
           retention-days: 14
