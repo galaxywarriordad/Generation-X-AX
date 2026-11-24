@@ -73,23 +73,13 @@ public:
     AxSnesAdapter(const AxSnesAdapter&) = delete;
     AxSnesAdapter& operator=(const AxSnesAdapter&) = delete;
 
-    // Loads ax_engine.ini, applies optional preset override and staged SRAM path,
-    // and enforces preset invariants (including stock_cycle_exact locking).
     bool Initialize(const std::string& config_path,
                     const std::string& rom_path,
                     const std::string& preset_override = {},
                     const std::string& sram_override = {});
 
-    // Stages ROM & SRAM into /dev/shm on housekeeping_core (Core 5), acquires
-    // exclusive /run/lock/ax-dac.lock, applies Core 0 SCHED_FIFO + 2:3:1 affinity.
     bool StartSession();
-
-    // Computes bounded PPM rate adjustment from current audio ring fill %
-    // without allocating memory or blocking on Core 0.
     int ComputeRateGuardPpm(int current_ring_fill_pct) const noexcept;
-
-    // Atomically flushes staged SRAM to persistent storage, runs sync hook on
-    // housekeeping_core (Core 5), and releases DAC lock.
     bool ShutdownSession();
 
     const SnesRuntimeConfig& config() const noexcept { return cfg_; }
