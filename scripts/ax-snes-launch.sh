@@ -33,20 +33,6 @@ if [[ -f "${PERSIST_SRAM}" ]]; then
     cp -f "${PERSIST_SRAM}" "${STAGED_SRAM}"
 fi
 
-cleanup() {
-    local exit_code=$?
-    if [[ -f "${STAGED_SRAM}" ]]; then
-        local tmp_sram="${PERSIST_SRAM}.tmp.$$"
-        cp -f "${STAGED_SRAM}" "${tmp_sram}"
-        mv -f "${tmp_sram}" "${PERSIST_SRAM}"
-    fi
-    if command -v /etc/init.d/K01piccolo-sync >/dev/null 2>&1; then
-        /etc/init.d/K01piccolo-sync save || true
-    fi
-    exit "${exit_code}"
-}
-trap cleanup EXIT INT TERM
-
 if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi -pm 1 >/dev/null 2>&1 || true
 fi
