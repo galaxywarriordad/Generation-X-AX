@@ -10,6 +10,10 @@ on:
           - Release
           - RelWithDebInfo
         default: Release
+      skylake_arch:
+        description: "Enable Skylake / BMI2 tuning (-march=skylake -mbmi -mbmi2)"
+        type: boolean
+        default: true
       build_hatari:
         description: "Build Hatari (Atari ST)"
         type: boolean
@@ -37,7 +41,7 @@ on:
       build_frontier:
         description: "Build Frontier: Elite II"
         type: boolean
-        default: true
+        default: false
 
 jobs:
   build-linux:
@@ -54,21 +58,34 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h
 
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: genx-linux-ccache-${{ github.sha }}
+          restore-keys: |
+            genx-linux-ccache-
+
       - name: Install System Build Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config git nasm \
+            clang lld llvm ccache cmake ninja-build pkg-config git nasm \
             libsdl2-dev libasound2-dev libgl1-mesa-dev libglu1-mesa-dev \
             libpng-dev zlib1g-dev libzstd-dev libreadline-dev libcapstone-dev \
             libfreetype-dev libspeexdsp-dev libzip-dev libcurl4-openssl-dev \
             libvulkan-dev glslang-tools
 
-      - name: Configure & Build Generation-X-AX Engines (Linux)
+      - name: Configure & Build Generation-X-AX Engines (Linux, Clang)
         run: |
           cmake -S . -B build -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
             -DAX_FETCH_SDK=ON \
+            -DAX_ENABLE_SKYLAKELOCK=${{ inputs.skylake_arch }} \
             -DAX_BUILD_HATARI=${{ inputs.build_hatari }} \
             -DAX_BUILD_BLASTEM=${{ inputs.build_blastem }} \
             -DAX_BUILD_FLYCAST=${{ inputs.build_flycast }} \
