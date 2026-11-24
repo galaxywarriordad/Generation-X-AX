@@ -1,77 +1,17 @@
-# Akai MPK Mini MK3 (`MPKmini3`) Integration & Control Mapping for *Frontier: Elite II* (`Generation-X-AX`)
+# Akai MPK Mini MK3 Control Mapping (`frontier-fe2` / `Generation-X-AX`)
 
-**Subsystem:** `Generation-X-AX` (`engines/frontier` \+ `shared/ax_retro_bridge`)  
-**SDK Baseline:** `ax-sdk` `v1_36_2` (`ax::core`, C++20)  
-**Target Topology:** 6-Core `x86_64` (`2:3:1` Core/IRQ Partitioning)  
-**Hardware Peripheral:** Akai Professional MPK Mini MK3 (`VID 0x09E8` / `PID 0x0049`, ALSA RawMIDI `hw:CARD=MPKmini3,DEV=0`)
+Deterministic USB RawMIDI hardware control specification for **Frontier: Elite II** (`frontier-fe2`) running under the `Generation-X-AX` `2:3:1` domain architecture on `Piccolo-AX` (`x86_64` Buildroot Linux `6.12-rt`).
 
 ---
 
-## 1\. Architectural Integration (`2:3:1` Core Isolation & SPSC Lock-Free Ring)
+## 1\. Hardware & Deterministic Threading Topology
 
-Mapping the Akai MPK Mini MK3 controller to *Frontier: Elite II* inside `Generation-X-AX` reuses the existing lock-free SPSC listener architecture (`MpkMini3Listener`, modeled on `FLAC_AX`'s `src/midi/mpk_mini3.hpp` & `.cpp`) rather than introducing a blocking or duplicate MIDI stack.
+* **Controller:** Akai Professional MPK Mini MK3 (`hw:CARD=MPKmini3,DEV=0`)  
+* **ALSA RawMIDI Listener Thread:** Pinned to **Core 5 (`0x20`, Housekeeping Domain)** via `ax_frontier_midi_init`  
+* **Lock-Free Transport:** 64-byte cache-line-aligned SPSC ring buffer (`256` slots, zero mutexes, zero heap allocations on the hot path)  
+* **Simulation Drain Thread:** Pinned to **Cores 2–4 (`0x1C`, Guest/Simulation Domain)** via `ax_frontier_step_frame`, bounded to **32 events per frame** (`max_events_per_frame = 32`) prior to advancing physics
 
-### Thread & Core Separation
-
-| Execution Domain | Core Mask (`2:3:1`) | Scheduling Policy | Responsibility in *Frontier: Elite II* |
-| :---- | :---- | :---- | :---- |
-| **Audio & Real-Time Timing** | Core 0 (`0x01`) | `SCHED_FIFO` | Zero-underrun audio output and deterministic frame/tick pacing |
-| **Vulkan / OpenGL Presentation** | Core 1 (`0x02`) | `SCHED_FIFO` | Command submission, HUD/cockpit rendering, and scanout |
-| **Simulation & Input Drain** | Cores 2–4 (`0x1C`) | `SCHED_OTHER` / Isolated | Flight physics, 68k/guest execution, and bounded per-frame SPSC MIDI event drain (`<= 32` events/frame) |
-| **Housekeeping & USB RawMIDI** | Core 5 (`0x20`) | `SCHED_OTHER` | `MpkMini3Listener` ALSA RawMIDI polling (`hw:CARD=MPKmini3,DEV=0`), hot-plug/unplug recovery, and `ax_engine.ini` I/O |
-
-### Design Guardrails
-
-* **Zero Contention on Real-Time/Simulation Cores:** All USB-MIDI descriptor probing, ALSA RawMIDI polling, and disconnect/reconnect backoff run strictly on **Core 5 (`0x20`)**. Events are pushed into a 64-byte cache-line-aligned lock-free SPSC ring buffer so flight physics and audio clocks never block on USB I/O.  
-* **Graceful Fallback via `ax-sdk` (`v1_36_2`):** The MIDI bridge is gated behind `ax_retro_bridge` (`ax::core`) and `ax_engine.ini`. If the MPK Mini MK3 is disconnected or disabled, *Frontier* runs identically with standard keyboard, mouse, and gamepad inputs.  
-* **DAC & Session Arbitration (`/run/lock/ax-dac.lock`):** When `frontier` runs under `Piccolo-AX` or alongside `FLAC_AX` / `ax_av_studio`, MIDI events stay scoped to Frontier's flight/cockpit controls without acquiring audio DAC locks.
-
----
-
-## 2\. Physical Control Layout for *Frontier: Elite II*
-
-### Analog & Rotary Controls (Thumbstick \+ Encoders K1–K8)
-
-| MPK Mini MK3 Control | MIDI Signal | *Frontier: Elite II* Action | Operational Notes & Tuning |
-| :---- | :---- | :---- | :---- |
-| **Thumbstick X-Axis** | Pitch Bend (Ch 1, 14-bit) | **Roll / Yaw Fine Trim** | Apply a `±6%` center deadzone and exponential response curve for smooth dogfighting and station docking alignment |
-| **Thumbstick Y-Axis** | CC 1 (Mod Wheel, Ch 1\) | **Pitch Up / Down Trim** | Natural elevator-style pitch control without hunting keyboard keys |
-| **Encoder K1** | CC 70 (Ch 1\) | **Main Thruster / Set-Speed Trim** | Incremental throttle adjustment (`0%–100%` target velocity) |
-| **Encoder K2** | CC 71 (Ch 1\) | **Drive Mode Selector** | Cycles Manual Thrust, Set-Speed Cruise, and Engines Off |
-| **Encoder K3** | CC 72 (Ch 1\) | **Scanner / Tactical Radar Zoom** | Steps radar range in/out during system navigation and combat |
-| **Encoder K4** | CC 73 (Ch 1\) | **HUD / MFD Panel Cycle** | Cycles Navigation, Orbital Map, System Info, and Comms views |
-| **Encoder K5** | CC 74 (Ch 1\) | **Weapon / Laser Capacitor Bias** | Adjusts forward/rear laser fire cadence or energy priority |
-| **Encoder K6** | CC 75 (Ch 1\) | **Shield / Drive Power Balance** | Shifts power distribution during heavy engagements |
-| **Encoder K7** | CC 76 (Ch 1\) | **Time Compression (`Stardreamer`)** | Detented step control (`1x` \-\> `10x` \-\> `100x` \-\> `1000x` \-\> `10000x`) with a **safety guard** requiring deliberate multi-tick rotation to prevent accidental jumps |
-| **Encoder K8** | CC 77 (Ch 1\) | **Master / Cockpit Audio Trim** | Local volume/trim scaling without altering DAC hardware sample rate |
-
-### MPC Pads (Bank A & Bank B — MIDI Channel 10\)
-
-| Pad | Bank A (Flight & Combat) | Bank B (Navigation, Ship & System) |
-| :---- | :---- | :---- |
-| **Pad 1** | **Fire Primary Laser** (Hold/Repeat) | **Hyperspace Jump Initiate** (Requires valid target lock) |
-| **Pad 2** | **Launch Missile** | **Jettison Cargo / Escape Capsule** (Requires Sustain Shift) |
-| **Pad 3** | **Target Nearest Hostile** | **Toggle Landing Gear** |
-| **Pad 4** | **Cycle Next Target** | **Activate ECM / Countermeasures** |
-| **Pad 5** | **Engage / Disengage Autopilot** | **Open Galactic / Sector Star Map** |
-| **Pad 6** | **Docking Computer Engage** | **Open System / Orbital Map** |
-| **Pad 7** | **Match Target Velocity** | **Open Ship Status / Cargo Manifest** |
-| **Pad 8** | **Reset Time Compression to `1x` (Emergency Drop)** | **Pause / Toggle `[AX]` Telemetry Overlay** |
-
-### Keybed & Sustain Pedal
-
-* **25-Note Velocity Keybed (Ch 1, Notes `C2–C4`):**  
-  * **Lower Octave (`C2–B2`):** Quick camera presets (Forward View, Rear View, External Chase Cam, Tactical Overview) and cockpit MFD shortcuts.  
-  * **Upper Octave (`C3–C4`):** Programmable macro hotkeys (e.g., Request Docking Clearance, Hail Target, Quick-Save / Snapshot).  
-* **Sustain Pedal (`CC 64`, Ch 1):** Acts as a **Flight Modifier / Shift & Airbrake Latch**:  
-  * Held alone: Engages retro-thruster braking / attitude stabilization.  
-  * Held with Pads/Encoders: Unlocks guarded actions (such as Hyperspace Jump confirmation or Cargo Jettison) and switches encoders to fine-trim mode.
-
----
-
-## 3\. Configuration (`ax_engine.ini`)
-
-Add the following `[frontier.midi]` section to `ax_engine.ini` in `Generation-X-AX` so bindings, deadzones, and device auto-detection remain declarative and portable:
+### `ax_engine.ini` Reference Block
 
 ```
 [frontier.midi]
@@ -88,13 +28,83 @@ sustain_shift_cc = 64
 
 ---
 
-## 4\. Build & Verification Checklist
+## 2\. Analog Thumbstick & Modifier Pedal (MIDI Channel 1 / Index `0`)
 
-1. **Verify Hardware Detection on Core 5 (`0x20`):**
+| Physical Control | MIDI Message | Bridge Command ID | Flight / Cockpit Action | Response Curve & Guardrails |
+| :---- | :---- | :---- | :---- | :---- |
+| **4-Way Thumbstick X** | Pitch Bend (`0xE0`, `-8192..+8191`) | `AX_FRONTIER_MIDI_CMD_TRIM_ROLL_YAW` | Roll / Yaw fine attitude trim | `±6%` center deadzone (`0.06`), quadratic curve (`scaled²`) for docking and dogfight precision |
+| **4-Way Thumbstick Y** | Mod Wheel (`CC 1`, `0..127`, center `64`) | `AX_FRONTIER_MIDI_CMD_TRIM_PITCH` | Pitch fine attitude trim | `±6%` center deadzone (`0.06`), quadratic curve (`scaled²`) |
+| **Sustain Pedal Jack** | Sustain (`CC 64`, `>= 64` held) | Internal Shift State (`sustain_held = 1`) | Flight safety shift modifier | Required to arm destructive/irreversible actions (`Jettison / Escape Capsule`) |
+
+---
+
+## 3\. Endless Rotary Encoders K1–K8 (MIDI Channel 1 / Index `0`)
+
+| Encoder | MIDI CC | Bridge Command ID | Flight / Cockpit Action | Behavior |
+| :---- | :---- | :---- | :---- | :---- |
+| **K1** | `CC 70` | `AX_FRONTIER_MIDI_CMD_THROTTLE_TRIM` | Main Thruster / Set-Speed Trim | Normalized `0.0 .. 1.0` (`value / 127.0`) |
+| **K2** | `CC 71` | `AX_FRONTIER_MIDI_CMD_CYCLE_DRIVE_MODE` | Flight / Drive Mode Selector | Stepped delta (`+1` if `>= 64`, `-1` if `< 64`) |
+| **K3** | `CC 72` | `AX_FRONTIER_MIDI_CMD_ZOOM_RADAR` | Scanner / Radar Range Zoom | Stepped delta (`+1` / `-1`) |
+| **K4** | `CC 73` | `AX_FRONTIER_MIDI_CMD_CYCLE_HUD_MFD` | HUD / MFD Sub-Panel Cycle | Stepped delta (`+1` / `-1`) |
+| **K5** | `CC 74` | `AX_FRONTIER_MIDI_CMD_LASER_CAP_BIAS` | Weapon / Laser Capacitor Bias | Normalized `0.0 .. 1.0` |
+| **K6** | `CC 75` | `AX_FRONTIER_MIDI_CMD_SHIELD_DRIVE_BIAS` | Shield / Drive Power Balance | Normalized `0.0 .. 1.0` |
+| **K7** | `CC 76` | `AX_FRONTIER_MIDI_CMD_STEP_TIME_COMPRESSION` | Stardreamer Time Compression Step | Guarded (`time_compression_guard = true`): requires 2 encoder ticks per step to prevent accidental warp spikes |
+| **K8** | `CC 77` | `AX_FRONTIER_MIDI_CMD_MASTER_AUDIO_TRIM` | Cockpit / Master Audio Trim | Normalized `0.0 .. 1.0` |
+
+---
+
+## 4\. MPC Drum Pads — Bank A & Bank B (MIDI Channel 10 / Index `9`)
+
+### Bank A (Combat, Targeting & Flight Assist — Notes `36..43`)
+
+| Pad | MIDI Note | Bridge Command ID | Flight / Cockpit Action |
+| :---- | :---- | :---- | :---- |
+| **Pad 1** | Note `36` | `AX_FRONTIER_MIDI_CMD_FIRE_PRIMARY_LASER` | Fire Primary Pulse / Beam Laser |
+| **Pad 2** | Note `37` | `AX_FRONTIER_MIDI_CMD_LAUNCH_MISSILE` | Launch Armed Missile |
+| **Pad 3** | Note `38` | `AX_FRONTIER_MIDI_CMD_TARGET_NEAREST_HOSTILE` | Acquire Nearest Hostile Contact |
+| **Pad 4** | Note `39` | `AX_FRONTIER_MIDI_CMD_CYCLE_NEXT_TARGET` | Cycle Next Scanner Target |
+| **Pad 5** | Note `40` | `AX_FRONTIER_MIDI_CMD_TOGGLE_AUTOPILOT` | Toggle Flight Autopilot |
+| **Pad 6** | Note `41` | `AX_FRONTIER_MIDI_CMD_ENGAGE_DOCKING_COMPUTER` | Engage Orbital / Starport Docking Computer |
+| **Pad 7** | Note `42` | `AX_FRONTIER_MIDI_CMD_MATCH_TARGET_VELOCITY` | Match Selected Target Velocity |
+| **Pad 8** | Note `43` | `AX_FRONTIER_MIDI_CMD_RESET_TIME_COMPRESSION_1X` | Immediate Stardreamer Drop to `1x` Real-Time |
+
+### Bank B (Navigation, Systems & Guarded Actions — Notes `44..51`)
+
+| Pad | MIDI Note | Bridge Command ID | Flight / Cockpit Action | Safety Guardrail |
+| :---- | :---- | :---- | :---- | :---- |
+| **Pad 9 (B1)** | Note `44` | `AX_FRONTIER_MIDI_CMD_HYPERSPACE_JUMP` | Execute Hyperspace Jump | Requires locked destination system |
+| **Pad 10 (B2)** | Note `45` | `AX_FRONTIER_MIDI_CMD_JETTISON_OR_ESCAPE_GUARDED` | Jettison Cargo / Trigger Escape Capsule | **Sustain-Guarded:** Ignored unless `CC 64` (`sustain_held == 1`) is active |
+| **Pad 11 (B3)** | Note `46` | `AX_FRONTIER_MIDI_CMD_TOGGLE_LANDING_GEAR` | Deploy / Retract Landing Undercarriage | — |
+| **Pad 12 (B4)** | Note `47` | `AX_FRONTIER_MIDI_CMD_ACTIVATE_ECM` | Fire Electronic Countermeasures (ECM) | — |
+| **Pad 13 (B5)** | Note `48` | `AX_FRONTIER_MIDI_CMD_OPEN_STAR_MAP` | Open Sector / Galaxy Star Map | — |
+| **Pad 14 (B6)** | Note `49` | `AX_FRONTIER_MIDI_CMD_OPEN_SYSTEM_MAP` | Open Local Planetary System Orrery | — |
+| **Pad 15 (B7)** | Note `50` | `AX_FRONTIER_MIDI_CMD_OPEN_SHIP_STATUS` | Open Ship Status, Cargo & Equipment Manifest | — |
+| **Pad 16 (B8)** | Note `51` | `AX_FRONTIER_MIDI_CMD_TOGGLE_TELEMETRY_OVERLAY` | Toggle `[AX]` Determinism & Frame Telemetry Overlay | — |
+
+---
+
+## 5\. 25-Note Keybed Presets (MIDI Channel 1 / Index `0`)
+
+* **MIDI Notes (`NoteOn`, velocity `> 0`):** Emits `AX_FRONTIER_MIDI_CMD_CAMERA_OR_MFD_PRESET` with `step_delta = midi_note` (`48..72` default octave) and `axis_value = velocity / 127.0` for instant cockpit camera angles, navigation bookmarks, or MFD presets.
+
+---
+
+## 6\. Runtime Verification on `Piccolo-AX`
+
+1. Confirm ALSA exposes the controller node:
 
 ```sh
-amidi -l | grep -i MPKmini3
+amidi -l
 ```
 
-2. **Confirm `ax_retro_bridge` & `ax::core` Linkage:** Ensure `engines/frontier` links `ax_retro_bridge` (`ax-sdk v1_36_2`) in `Generation-X-AX/CMakeLists.txt` with `AX_BUILD_FRONTIER=ON`.  
-3. **Runtime Smoke Test:** Launch `frontier` with and without the MPK Mini MK3 connected, verify zero audio underruns on Core 0 (`0x01`), test hot-unplug/replug recovery on Core 5 (`0x20`), and confirm Pad 8 (`Reset Time Compression to 1x`) immediately drops `Stardreamer` warp back to real time.
+   Verify `hw:CARD=MPKmini3,DEV=0` appears in the device list.
+
+   
+
+2. Verify thread affinity under `frontier-fe2`:
+
+```sh
+ps -Lo pid,tid,psr,comm -p $(pidof frontier-fe2)
+```
+
+   Confirm the simulation thread executes on **Cores 2–4** (`PSR` `2`, `3`, or `4`) and the ALSA RawMIDI listener thread executes on **Core 5** (`PSR` `5`).
