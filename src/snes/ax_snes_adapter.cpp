@@ -15,6 +15,21 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if defined(GENX_SNES_HAS_AX_SDK)
+#if __has_include(<ax/config.hpp>)
+#include <ax/config.hpp>
+#define GENX_SNES_HAS_AX_CONFIG_HPP 1
+#endif
+#if __has_include(<ax/telemetry.hpp>)
+#include <ax/telemetry.hpp>
+#define GENX_SNES_HAS_AX_TELEMETRY_HPP 1
+#endif
+#if __has_include(<ax/topology.hpp>)
+#include <ax/topology.hpp>
+#define GENX_SNES_HAS_AX_TOPOLOGY_HPP 1
+#endif
+#endif
+
 namespace fs = std::filesystem;
 
 namespace ax::genx::snes {
@@ -92,6 +107,7 @@ AxSnesAdapter::~AxSnesAdapter() {
     if (running_.load(std::memory_order_acquire)) {
         ShutdownSession();
     }
+    ShutdownSdkTelemetry();
     ReleaseDacLock();
 }
 
@@ -101,6 +117,10 @@ bool AxSnesAdapter::Initialize(const std::string& config_path,
                                const std::string& sram_override) {
     rom_path_ = rom_path;
     sram_override_ = sram_override;
+
+#if defined(GENX_SNES_HAS_AX_CONFIG_HPP)
+    (void)ax::LoadEngineConfig(config_path);
+#endif
 
     std::FILE* fp = std::fopen(config_path.c_str(), "r");
     if (!fp) {
@@ -134,6 +154,7 @@ bool AxSnesAdapter::Initialize(const std::string& config_path,
                 else if (key == "engine_backend") cfg_.engine_backend = val;
                 else if (key == "profile_preset") active_preset_name = val;
                 else if (key == "auto_detect_coprocessor") cfg_.auto_detect_coprocessor = ParseBool(val, true);
+                else if (key == "hardware_profile") cfg_.hardware_profile = val;
                 else if (key == "audio_core") cfg_.audio_core = std::atoi(val.c_str());
                 else if (key == "audio_sched_fifo_priority") cfg_.audio_sched_fifo_priority = std::atoi(val.c_str());
                 else if (key == "video_core") cfg_.video_core = std::atoi(val.c_str());
@@ -162,6 +183,9 @@ bool AxSnesAdapter::Initialize(const std::string& config_path,
                 else if (key == "persistent_rom_dir") cfg_.persistent_rom_dir = val;
                 else if (key == "atomic_flush_on_exit") cfg_.atomic_flush_on_exit = ParseBool(val, true);
                 else if (key == "sync_archive_hook") cfg_.sync_archive_hook = val;
+                else if (key == "telemetry_enabled") cfg_.telemetry_enabled = ParseBool(val, true);
+                else if (key == "telemetry_publish_interval_ms") cfg_.telemetry_publish_interval_ms = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 10));
+                else if (key == "telemetry_export_jitter_hist") cfg_.telemetry_export_jitter_hist = ParseBool(val, true);
             }
         }
 
@@ -226,6 +250,70 @@ bool AxSnesAdapter::Initialize(const std::string& config_path,
     }
 
     return !rom_path_.empty();
+}
+
+bool AxSnesAdapter::InitSdkRuntimeAndTelemetry() {
+    if (!cfg_.telemetry_enabled) {
+        sdk_telemetry_ready_.store(false, std::memory_order_release);
+        return true;
+    }
+
+#if defined(GENX_SNES_HAS_AX_TELEMETRY_HPP)
+    const bool ok = ax::InitTelemetryShm();
+    sdk_telemetry_ready_.store(ok, std::memory_order_release);
+    if (!ok) {
+        std::cerr << "[ax-snes] ax::InitTelemetryShm() unavailable; using local atomic counters.\n";
+    }
+#else
+    sdk_telemetry_ready_.store(false, std::memory_order_release);
+#endif
+    return true;
+}
+
+void AxSnesAdapter::ShutdownSdkTelemetry() {
+    sdk_telemetry_ready_.store(false, std::memory_order_release);
+}
+
+void AxSnesAdapter::RecordFrameTelemetry(uint64_t frame_index,
+                                         int ring_fill_pct,
+                                         int rate_guard_ppm,
+                                         bool audio_underrun) noexcept {
+    frames_stepped_.store(frame_index, std::memory_order_release);
+    last_ring_fill_pct_.store(ring_fill_pct, std::memory_order_release);
+    last_rate_guard_ppm_.store(rate_guard_ppm, std::memory_order_release);
+    if (rate_guard_ppm != 0) {
+        rate_guard_adjustments_.fetch_add(1, std::memory_order_acq_rel);
+    }
+    if (audio_underrun) {
+        audio_underruns_.fetch_add(1, std::memory_order_acq_rel);
+#if defined(GENX_SNES_HAS_AX_TELEMETRY_HPP)
+        if (sdk_telemetry_ready_.load(std::memory_order_acquire)) {
+            ax::RecordAudioCallbackMetrics(0, 0, 0, true);
+        }
+#endif
+    }
+}
+
+SnesTelemetrySnapshot AxSnesAdapter::GetTelemetrySnapshot() const noexcept {
+    SnesTelemetrySnapshot snap{};
+    snap.frames_stepped = frames_stepped_.load(std::memory_order_acquire);
+    snap.last_ring_fill_pct = last_ring_fill_pct_.load(std::memory_order_acquire);
+    snap.last_rate_guard_ppm = last_rate_guard_ppm_.load(std::memory_order_acquire);
+    snap.rate_guard_adjustments = rate_guard_adjustments_.load(std::memory_order_acquire);
+    snap.audio_underruns = audio_underruns_.load(std::memory_order_acquire);
+    snap.sdk_telemetry_active = sdk_telemetry_ready_.load(std::memory_order_acquire);
+
+#if defined(GENX_SNES_HAS_AX_TELEMETRY_HPP)
+    if (snap.sdk_telemetry_active) {
+        const auto sdk_snap = ax::GetTelemetrySnapshot();
+        snap.vram_reaps = sdk_snap.vram_reaps;
+        snap.bar1_stalls = sdk_snap.bar1_stalls;
+        if (sdk_snap.audio_underruns > snap.audio_underruns) {
+            snap.audio_underruns = sdk_snap.audio_underruns;
+        }
+    }
+#endif
+    return snap;
 }
 
 bool AxSnesAdapter::AcquireDacLock() {
@@ -330,6 +418,9 @@ void AxSnesAdapter::RunSyncArchiveHook() {
 
 void AxSnesAdapter::PinThreadToCore(int core_id) {
     if (core_id < 0 || core_id >= CPU_SETSIZE) return;
+#if defined(GENX_SNES_HAS_AX_TOPOLOGY_HPP)
+    ax::topology::pin_current_thread_to_core(core_id);
+#endif
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(core_id, &set);
@@ -374,6 +465,7 @@ int AxSnesAdapter::ComputeRateGuardPpm(int current_ring_fill_pct) const noexcept
 }
 
 bool AxSnesAdapter::StartSession() {
+    if (!InitSdkRuntimeAndTelemetry()) return false;
     if (!StageRomAndSavesToShm()) return false;
     if (!AcquireDacLock()) return false;
 
@@ -388,6 +480,7 @@ bool AxSnesAdapter::ShutdownSession() {
     const bool flushed = FlushSavesAtomicallyToStorage();
     RunSyncArchiveHook();
     ReleaseDacLock();
+    ShutdownSdkTelemetry();
     return flushed;
 }
 
