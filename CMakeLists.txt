@@ -10,30 +10,38 @@ option(AX_BUILD_RMG "Build RMG (Nintendo 64) engine" ON)
 option(AX_BUILD_BLASTEM "Build BlastEm (Sega Mega Drive) engine" ON)
 option(AX_BUILD_CANNONBALL "Build Cannonball (1986 OutRun) engine" ON)
 option(AX_BUILD_EDUKE32 "Build EDuke32 FPS engine" ON)
-option(AX_BUILD_FRONTIER "Build Frontier: Elite II engine" OFF)
+option(AX_BUILD_FRONTIER "Build Frontier: Elite II engine" ON)
 option(AX_BUILD_FLYCAST "Build Flycast (Dreamcast / NAOMI / Atomiswave) engine" ON)
 option(AX_BUILD_HATARI "Build Hatari (Atari ST) engine" ON)
 option(AX_FETCH_SDK "Fetch ax-sdk v1_36_2 if AX_SDK_DIR is not set" ON)
 option(AX_ENABLE_SKYLAKELOCK "Lock x86_64 Release builds to -march=skylake -mbmi -mbmi2" ON)
 option(AX_ENABLE_LTO "Enable ThinLTO / Interprocedural Optimization in Release builds" ON)
+option(AX_ENABLE_MPK3_MIDI "Compile Akai MPK Mini MK3 ALSA/SPSC bridge into ax_retro_bridge" ON)
 option(AX_PGO_GENERATE "Enable Stage 1 PGO instrumentation (-fprofile-instr-generate)" OFF)
 option(AX_PGO_USE "Enable Stage 2 PGO profile consumption (set AX_PGO_PROFILE_FILE)" OFF)
 set(AX_PGO_PROFILE_FILE "" CACHE FILEPATH "Merged .profdata file for Stage 2 PGO")
 
-if(AX_ENABLE_LTO)
-  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
-  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
-endif()
-
+# Deterministic build flags (reproducible paths, archives, and builds)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
     add_compile_definitions(
       _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH=1
       _DISABLE_VECTOR_ANNOTATION
     )
-    add_compile_options(/bigobj /EHsc -Wno-unused-command-line-argument)
+    add_compile_options(
+      /bigobj
+      /EHsc
+      /Brepro
+      -Wno-unused-command-line-argument
+      "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=."
+    )
+    add_link_options(/Brepro)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND AX_ENABLE_SKYLAKELOCK)
       add_compile_options(/clang:-O3 /clang:-march=skylake /clang:-mbmi /clang:-mbmi2)
+    endif()
+    if(AX_ENABLE_LTO)
+      add_compile_options($<$<CONFIG:Release>:-flto=thin> $<$<CONFIG:RelWithDebInfo>:-flto=thin>)
+      add_link_options($<$<CONFIG:Release>:-flto=thin> $<$<CONFIG:RelWithDebInfo>:-flto=thin>)
     endif()
     if(AX_PGO_GENERATE)
       add_compile_options(-fprofile-instr-generate)
@@ -41,9 +49,21 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
       add_compile_options("-fprofile-use=${AX_PGO_PROFILE_FILE}")
     endif()
   else()
-    add_compile_options(-O3)
+    add_compile_options(
+      -O3
+      -fno-plt
+      "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=."
+      "-ffile-prefix-map=${CMAKE_BINARY_DIR}=build"
+    )
     if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND AX_ENABLE_SKYLAKELOCK)
       add_compile_options(-march=skylake -mbmi -mbmi2)
+    endif()
+    if(AX_ENABLE_LTO)
+      add_compile_options($<$<CONFIG:Release>:-flto=thin> $<$<CONFIG:RelWithDebInfo>:-flto=thin>)
+      add_link_options($<$<CONFIG:Release>:-flto=thin> $<$<CONFIG:RelWithDebInfo>:-flto=thin>)
+    endif()
+    if(UNIX AND NOT APPLE)
+      add_link_options(-Wl,--build-id=sha1)
     endif()
     if(AX_PGO_GENERATE)
       add_compile_options(-fprofile-instr-generate)
@@ -53,6 +73,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
       add_link_options("-fprofile-use=${AX_PGO_PROFILE_FILE}")
     endif()
   endif()
+elseif(AX_ENABLE_LTO)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
 endif()
 
 set(AX_SDK_DIR "" CACHE PATH "Path to local ax-sdk checkout")
@@ -82,8 +105,16 @@ if(NOT TARGET ax::core AND NOT TARGET ax_core)
   endif()
 endif()
 
-add_library(ax_retro_bridge STATIC
+set(AX_RETRO_BRIDGE_SOURCES
   shared/ax_retro_bridge.cpp
+)
+
+if(AX_ENABLE_MPK3_MIDI AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/shared/ax_midi_mpk3.cpp")
+  list(APPEND AX_RETRO_BRIDGE_SOURCES shared/ax_midi_mpk3.cpp)
+endif()
+
+add_library(ax_retro_bridge STATIC
+  ${AX_RETRO_BRIDGE_SOURCES}
 )
 
 target_include_directories(ax_retro_bridge
@@ -98,6 +129,18 @@ if(TARGET ax::core)
 elseif(TARGET ax_core)
   target_link_libraries(ax_retro_bridge PUBLIC ax_core)
   target_compile_definitions(ax_retro_bridge PUBLIC AX_HAS_CORE_TARGET=1)
+endif()
+
+if(AX_ENABLE_MPK3_MIDI AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/shared/ax_midi_mpk3.cpp")
+  find_package(Threads REQUIRED)
+  target_link_libraries(ax_retro_bridge PUBLIC Threads::Threads)
+  if(UNIX AND NOT APPLE)
+    find_package(ALSA QUIET)
+    if(ALSA_FOUND)
+      target_link_libraries(ax_retro_bridge PUBLIC ALSA::ALSA)
+      target_compile_definitions(ax_retro_bridge PUBLIC AX_FRONTIER_HAS_ALSA=1)
+    endif()
+  endif()
 endif()
 
 macro(ax_bind_retro_engine _engine_target)
