@@ -35,11 +35,18 @@ struct SnesRuntimeConfig {
     bool alsa_disable_resample{true};
     std::string dac_lock_path{"/run/lock/ax-dac.lock"};
 
+    // Video & GM200 scanout pacing
+    std::string video_backend{"vulkan_1_3"};
+    bool integer_scaling{true};
+    std::string vsync_mode{"fifo"};
+    double max_vram_budget_gib{5.00};
+    double hard_vram_ceiling_gib{5.50};
+
     // SPC700 clock-locked rate guard
     bool rate_guard_enabled{true};
-    int rate_guard_max_ppm{150};
+    int rate_guard_max_ppm{250};
     int rate_guard_ring_target_pct{50};
-    int rate_guard_hysteresis_pct{5};
+    int rate_guard_hysteresis_pct{3};
 
     // /dev/shm staging & persistence
     bool shm_staging_enabled{true};
@@ -48,11 +55,13 @@ struct SnesRuntimeConfig {
     std::string persistent_save_dir{"/userdata/saves/snes"};
     std::string persistent_rom_dir{"/userdata/roms/snes"};
     bool atomic_flush_on_exit{true};
+    std::string sync_archive_hook{"K01piccolo-sync"};
 
     // Preset overrides
     uint32_t cpu_overclock_pct{100};
     uint32_t coprocessor_overclock_pct{100};
     int runahead_frames{0};
+    bool mid_scanline_strict{true};
     bool thread_boost_coprocessor{false};
 };
 
@@ -64,20 +73,23 @@ public:
     AxSnesAdapter(const AxSnesAdapter&) = delete;
     AxSnesAdapter& operator=(const AxSnesAdapter&) = delete;
 
-    // Loads ax_engine.ini via ax::LoadEngineConfig(), applies active preset,
-    // and resolves topology/VRAM ceilings from ax-sdk v1_36_2.
-    bool Initialize(const std::string& config_path, const std::string& rom_path);
+    // Loads ax_engine.ini, applies optional preset override and staged SRAM path,
+    // and enforces preset invariants (including stock_cycle_exact locking).
+    bool Initialize(const std::string& config_path,
+                    const std::string& rom_path,
+                    const std::string& preset_override = {},
+                    const std::string& sram_override = {});
 
-    // Stages ROM & SRAM into /dev/shm on housekeeping core (Core 5) and
-    // acquires exclusive /run/lock/ax-dac.lock + Core 0 SCHED_FIFO priority 80.
+    // Stages ROM & SRAM into /dev/shm on housekeeping_core (Core 5), acquires
+    // exclusive /run/lock/ax-dac.lock, applies Core 0 SCHED_FIFO + 2:3:1 affinity.
     bool StartSession();
 
     // Computes bounded PPM rate adjustment from current audio ring fill %
     // without allocating memory or blocking on Core 0.
     int ComputeRateGuardPpm(int current_ring_fill_pct) const noexcept;
 
-    // Flushes /dev/shm SRAM/saves atomically to /userdata/saves/snes,
-    // triggers K01piccolo-sync hook if enabled, and releases DAC lock.
+    // Atomically flushes staged SRAM to persistent storage, runs sync hook on
+    // housekeeping_core (Core 5), and releases DAC lock.
     bool ShutdownSession();
 
     const SnesRuntimeConfig& config() const noexcept { return cfg_; }
@@ -88,10 +100,14 @@ private:
     void ReleaseDacLock();
     bool StageRomAndSavesToShm();
     bool FlushSavesAtomicallyToStorage();
-    void ApplyCoreAffinities();
+    void RunSyncArchiveHook();
+    void PinThreadToCore(int core_id);
+    void PinThreadToCores(const std::vector<int>& cores);
+    void ApplySessionSchedulingAndAffinity();
 
     SnesRuntimeConfig cfg_{};
     std::string rom_path_{};
+    std::string sram_override_{};
     std::string staged_rom_path_{};
     std::string staged_sram_path_{};
     int dac_lock_fd_{-1};
