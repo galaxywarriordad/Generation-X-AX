@@ -23,6 +23,7 @@ public:
         loaded_ = true;
 
         std::cerr << "[genx-snes-core] Backend=" << cfg.engine_backend
+                  << " Profile=" << cfg.hardware_profile
                   << " ROM=" << rom_path_
                   << " SRAM=" << (sram_path_.empty() ? "<none>" : sram_path_)
                   << " coproc_overclock=" << cfg.coprocessor_overclock_pct << "%"
@@ -36,8 +37,6 @@ public:
                    SnesFramePacingState& out_state) override {
         if (!loaded_) return false;
 
-        // Target ~60.0988 Hz NTSC SNES cadence (16639 us nominal frame)
-        // adjusted subtly by audio_master_pts rate_guard_ppm.
         const double ppm_scale = 1.0 - (static_cast<double>(rate_guard_ppm) / 1'000'000.0);
         const auto base_period = std::chrono::microseconds(16639);
         const auto paced_period = std::chrono::microseconds(
@@ -46,7 +45,6 @@ public:
         std::this_thread::sleep_for(paced_period);
 
         ++frame_counter_;
-        // Simulated ring fill drift around target_pct for rate-guard feedback
         const int wave = static_cast<int>((frame_counter_ % 17) - 8);
         const int fill_pct = std::clamp(
             cfg.rate_guard_ring_target_pct + wave, 0, 100);
@@ -104,6 +102,7 @@ bool RunSnesCoreLoop(AxSnesAdapter& adapter,
             return false;
         }
         ring_fill_pct = state.ring_fill_pct;
+        adapter.RecordFrameTelemetry(state.frame_index, ring_fill_pct, ppm, false);
     }
 
     engine->UnloadCartridge();
