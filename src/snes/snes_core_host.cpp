@@ -1,180 +1,58 @@
-#include "snes_core_host.hpp"
+#pragma once
 
-#include <algorithm>
-#include <chrono>
-#include <iostream>
-#include <thread>
+#include "ax_snes_adapter.hpp"
+
+#include <csignal>
+#include <cstdint>
+#include <memory>
+#include <string>
 
 namespace ax::genx::snes {
 
-SnesActiveLoopPolicy BuildActiveLoopPolicy(const SnesRuntimeConfig& cfg) noexcept {
-    SnesActiveLoopPolicy policy{};
-    policy.preset = cfg.preset;
-    policy.cpu_overclock_pct = cfg.cpu_overclock_pct;
-    policy.coprocessor_overclock_pct = cfg.coprocessor_overclock_pct;
-    policy.coprocessor_boost_active = cfg.thread_boost_coprocessor;
-    policy.runahead_frames = cfg.runahead_frames;
-    policy.effective_audio_buffer_periods =
-        (cfg.alsa_buffer_periods == 0) ? 1u : cfg.alsa_buffer_periods;
-
-    if (cfg.preset == SnesPreset::StockCycleExact) {
-        policy.cpu_overclock_pct = 100;
-        policy.coprocessor_overclock_pct = 100;
-        policy.coprocessor_budget_factor = 1.0;
-        policy.coprocessor_boost_active = false;
-        policy.runahead_frames = 0;
-    } else if (cfg.preset == SnesPreset::CoprocessorBoost) {
-        if (policy.coprocessor_overclock_pct < 125) {
-            policy.coprocessor_overclock_pct = 125;
-        }
-        policy.coprocessor_boost_active = true;
-        policy.coprocessor_budget_factor =
-            static_cast<double>(policy.coprocessor_overclock_pct) / 100.0;
-        policy.runahead_frames = 0;
-    } else if (cfg.preset == SnesPreset::LowLatencyInput) {
-        if (policy.runahead_frames <= 0) {
-            policy.runahead_frames = 1;
-        }
-        if (policy.effective_audio_buffer_periods > 3u) {
-            policy.effective_audio_buffer_periods = 3u;
-        }
-        policy.coprocessor_budget_factor =
-            static_cast<double>(policy.coprocessor_overclock_pct) / 100.0;
-    }
-
-    if (cfg.alsa_rate > 0u) {
-        const uint64_t total_frames =
-            static_cast<uint64_t>(cfg.alsa_period_frames) *
-            static_cast<uint64_t>(policy.effective_audio_buffer_periods);
-        policy.effective_audio_latency_us = static_cast<uint32_t>(
-            (total_frames * 1'000'000ULL) / static_cast<uint64_t>(cfg.alsa_rate));
-    }
-
-    return policy;
-}
-
-namespace {
-
-class DeterministicSnesCoreRunner final : public ISnesCoreEngine {
-public:
-    bool LoadCartridge(const std::string& staged_rom_path,
-                       const std::string& staged_sram_path,
-                       const SnesRuntimeConfig& cfg) override {
-        if (staged_rom_path.empty()) {
-            std::cerr << "[genx-snes-core] Empty staged ROM path.\n";
-            return false;
-        }
-        rom_path_ = staged_rom_path;
-        sram_path_ = staged_sram_path;
-        loaded_ = true;
-
-        const SnesActiveLoopPolicy initial_policy = BuildActiveLoopPolicy(cfg);
-        std::cerr << "[genx-snes-core] Backend=" << cfg.engine_backend
-                  << " Profile=" << cfg.hardware_profile
-                  << " ROM=" << rom_path_
-                  << " SRAM=" << (sram_path_.empty() ? "<none>" : sram_path_)
-                  << " coproc_overclock=" << initial_policy.coprocessor_overclock_pct << "%"
-                  << " (" << initial_policy.coprocessor_budget_factor << "x)"
-                  << " boost=" << (initial_policy.coprocessor_boost_active ? "on" : "off")
-                  << " runahead=" << initial_policy.runahead_frames
-                  << " periods=" << initial_policy.effective_audio_buffer_periods
-                  << " (" << initial_policy.effective_audio_latency_us << " us)\n";
-        return true;
-    }
-
-    bool StepFrame(const SnesRuntimeConfig& cfg,
-                   const SnesActiveLoopPolicy& policy,
-                   int rate_guard_ppm,
-                   SnesFramePacingState& out_state) override {
-        if (!loaded_) return false;
-
-        const auto t0 = std::chrono::steady_clock::now();
-        const double ppm_scale = 1.0 - (static_cast<double>(rate_guard_ppm) / 1'000'000.0);
-        const auto base_period = std::chrono::microseconds(16639);
-        const auto paced_period = std::chrono::microseconds(
-            std::max<long long>(1000, static_cast<long long>(base_period.count() * ppm_scale)));
-
-        // When low_latency_input is active with runahead_frames > 0, account for
-        // speculative pre-step work inside the frame budget without blocking audio.
-        if (policy.runahead_frames > 0) {
-            std::this_thread::yield();
-        }
-
-        std::this_thread::sleep_for(paced_period);
-        const auto t1 = std::chrono::steady_clock::now();
-
-        ++frame_counter_;
-        const int wave = static_cast<int>((frame_counter_ % 17) - 8);
-        const int low_latency_bias =
-            (policy.effective_audio_buffer_periods <= 3u) ? -1 : 0;
-        const int fill_pct = std::clamp(
-            cfg.rate_guard_ring_target_pct + wave + low_latency_bias, 0, 100);
-
-        out_state.frame_index = frame_counter_;
-        out_state.last_frametime_us = static_cast<uint32_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
-        out_state.ring_fill_pct = fill_pct;
-        out_state.rate_guard_ppm = rate_guard_ppm;
-        out_state.coprocessor_budget_factor = policy.coprocessor_budget_factor;
-        out_state.coprocessor_boost_active = policy.coprocessor_boost_active;
-        out_state.runahead_frames = policy.runahead_frames;
-        out_state.effective_audio_buffer_periods = policy.effective_audio_buffer_periods;
-        out_state.effective_audio_latency_us = policy.effective_audio_latency_us;
-        return true;
-    }
-
-    void UnloadCartridge() override {
-        loaded_ = false;
-        rom_path_.clear();
-        sram_path_.clear();
-    }
-
-private:
-    std::string rom_path_{};
-    std::string sram_path_{};
-    bool loaded_{false};
-    uint64_t frame_counter_{0};
+struct SnesActiveLoopPolicy {
+    SnesPreset preset{SnesPreset::StockCycleExact};
+    uint32_t cpu_overclock_pct{100};
+    uint32_t coprocessor_overclock_pct{100};
+    double coprocessor_budget_factor{1.0};
+    bool coprocessor_boost_active{false};
+    int runahead_frames{0};
+    uint32_t effective_audio_buffer_periods{4};
+    uint32_t effective_audio_latency_us{0};
 };
 
-} // namespace
+struct SnesFramePacingState {
+    uint64_t frame_index{0};
+    uint32_t last_frametime_us{16639};
+    int ring_fill_pct{50};
+    int rate_guard_ppm{0};
+    double coprocessor_budget_factor{1.0};
+    bool coprocessor_boost_active{false};
+    int runahead_frames{0};
+    uint32_t effective_audio_buffer_periods{4};
+    uint32_t effective_audio_latency_us{0};
+};
 
-std::unique_ptr<ISnesCoreEngine> CreateSnesCoreEngine(const SnesRuntimeConfig& cfg) {
-    (void)cfg;
-    return std::make_unique<DeterministicSnesCoreRunner>();
-}
+class ISnesCoreEngine {
+public:
+    virtual ~ISnesCoreEngine() = default;
+
+    virtual bool LoadCartridge(const std::string& staged_rom_path,
+                               const std::string& staged_sram_path,
+                               const SnesRuntimeConfig& cfg) = 0;
+    virtual bool StepFrame(const SnesRuntimeConfig& cfg,
+                           const SnesActiveLoopPolicy& policy,
+                           int rate_guard_ppm,
+                           SnesFramePacingState& out_state) = 0;
+    virtual void UnloadCartridge() = 0;
+};
+
+SnesActiveLoopPolicy BuildActiveLoopPolicy(const SnesRuntimeConfig& cfg) noexcept;
+
+std::unique_ptr<ISnesCoreEngine> CreateSnesCoreEngine(const SnesRuntimeConfig& cfg);
 
 bool RunSnesCoreLoop(AxSnesAdapter& adapter,
                      const std::string& staged_rom_path,
                      const std::string& staged_sram_path,
-                     volatile std::sig_atomic_t* stop_flag) {
-    const SnesRuntimeConfig& cfg = adapter.config();
-    auto engine = CreateSnesCoreEngine(cfg);
-    if (!engine) {
-        std::cerr << "[genx-snes-core] Failed creating SNES core engine.\n";
-        return false;
-    }
-
-    if (!engine->LoadCartridge(staged_rom_path, staged_sram_path, cfg)) {
-        return false;
-    }
-
-    int ring_fill_pct = cfg.rate_guard_ring_target_pct;
-    SnesFramePacingState state{};
-
-    while (stop_flag == nullptr || *stop_flag == 0) {
-        const SnesActiveLoopPolicy active_policy = BuildActiveLoopPolicy(cfg);
-        const int ppm = adapter.ComputeRateGuardPpm(ring_fill_pct);
-        if (!engine->StepFrame(cfg, active_policy, ppm, state)) {
-            engine->UnloadCartridge();
-            return false;
-        }
-        ring_fill_pct = state.ring_fill_pct;
-        adapter.RecordFrameTelemetry(
-            state.frame_index, state.last_frametime_us, ring_fill_pct, ppm, false);
-    }
-
-    engine->UnloadCartridge();
-    return true;
-}
+                     volatile std::sig_atomic_t* stop_flag);
 
 } // namespace ax::genx::snes
