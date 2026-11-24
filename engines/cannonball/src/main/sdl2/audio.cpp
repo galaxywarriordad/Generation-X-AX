@@ -14,6 +14,7 @@
     Copyright (c) 1998-2008 Atari800 development team
 ***************************************************************************/
 
+#include <atomic>
 #include <iostream>
 #include <cstring>
 #include <SDL.h>
@@ -28,27 +29,27 @@
    SDL Sound Implementation & Callback Function
    ----------------------------------------------------------------------------*/
 
-// Note that these variables are accessed by two separate threads.
-uint8_t* dsp_buffer;
-static int dsp_buffer_bytes;
-static int dsp_write_pos;
-static int dsp_read_pos;
-static int callbacktick;     // tick at which callback occured
-static int bytes_per_sample; // Number of bytes per sample entry (usually 4 bytes if stereo and 16-bit sound)
+// Note that these variables are accessed across audio producer and SDL callback contexts.
+uint8_t* dsp_buffer = nullptr;
+static int dsp_buffer_bytes = 0;
+static std::atomic<int> dsp_write_pos{0};
+static std::atomic<int> dsp_read_pos{0};
+static std::atomic<Uint32> callbacktick{0};     // tick at which callback occured
+static int bytes_per_sample = 4;               // Number of bytes per sample entry (usually 4 bytes if stereo and 16-bit sound)
 
 // SDL Audio Callback Function
-extern void fill_audio(void *udata, Uint8 *stream, int len);
+extern "C" void fill_audio(void *udata, Uint8 *stream, int len);
 
 // ----------------------------------------------------------------------------
 
 Audio::Audio()
 {
-	sound_enabled = false;
+    sound_enabled = false;
 }
 
 Audio::~Audio()
 {
-
+    stop_audio();
 }
 
 void Audio::init()
@@ -61,58 +62,55 @@ void Audio::start_audio()
 {
     if (!sound_enabled)
     {
-        // Since many GNU/Linux distros are infected with PulseAudio, SDL2 could chose PA as first
-	    // driver option before ALSA, and PA doesn't obbey our sample number requests, resulting
-	    // in audio gaps, if we're on a GNU/Linux we force ALSA.
-	    // Else we accept whatever SDL2 wants to give us or what the user specifies on SDL_AUDIODRIVER
-	    // enviroment variable.
-	    std::string platform = SDL_GetPlatform();
+        std::string platform = SDL_GetPlatform();
 
-	    if (platform=="Linux")
+        if (platform == "Linux")
         {
-            if (SDL_InitSubSystem(SDL_INIT_AUDIO)!= 0)
-                std::cout << "Error initalizing audio subsystem: " << SDL_GetError() << std::endl;
+            if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
+                std::cout << "Error initializing audio subsystem: " << SDL_GetError() << std::endl;
 
-	        if (SDL_AudioInit("alsa") != 0) 
+            if (SDL_AudioInit("alsa") != 0)
             {
-		        std::cout << "Error initalizing audio using ALSA: " << SDL_GetError() << std::endl;
-		        return;
-	        }
-
-	    }
-	    else 
+                std::cout << "Error initializing audio using ALSA: " << SDL_GetError() << std::endl;
+                return;
+            }
+        }
+        else
         {
-	        if(SDL_Init(SDL_INIT_AUDIO) == -1) 
-	        {
-		        std::cout << "Error initalizing audio: " << SDL_GetError() << std::endl;
-		        return;
-	        }		
-	    }
+            if (SDL_Init(SDL_INIT_AUDIO) == -1)
+            {
+                std::cout << "Error initializing audio: " << SDL_GetError() << std::endl;
+                return;
+            }
+        }
 
         // SDL Audio Properties
         SDL_AudioSpec desired, obtained;
+        std::memset(&desired, 0, sizeof(desired));
+        std::memset(&obtained, 0, sizeof(obtained));
 
         desired.freq     = config.sound.rate;
         desired.format   = AUDIO_S16SYS;
         desired.channels = CHANNELS;
         desired.samples  = SAMPLES;
         desired.callback = fill_audio;
-        desired.userdata = NULL;
-	
-	    // SDL2 block
-	    dev = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, /*SDL_AUDIO_ALLOW_FORMAT_CHANGE*/0);
-	    if (dev == 0)
-	    {
+        desired.userdata = nullptr;
+
+        dev = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0);
+        if (dev == 0)
+        {
             std::cout << "Error opening audio device: " << SDL_GetError() << std::endl;
             return;
         }
 
-        if (desired.samples != obtained.samples) 
+        if (desired.samples != obtained.samples)
         {
-            std::cout << "Error initalizing audio: number of samples not supported." << std::endl
+            std::cout << "Error initializing audio: number of samples not supported." << std::endl
                       << "Please compare desired vs obtained. Look at what audio driver SDL2 is using." << std::endl;
-	        return;
-	    }
+            SDL_CloseAudioDevice(dev);
+            dev = 0;
+            return;
+        }
 
         bytes_per_sample = CHANNELS * (BITS / 8);
 
@@ -126,33 +124,36 @@ void Audio::start_audio()
         dsp_buffer_bytes = CHANNELS * dsp_buffer_samps * (BITS / 8);
         dsp_buffer = new uint8_t[dsp_buffer_bytes];
 
-        // Create Buffer For Mixing
-        uint16_t buffer_size = (config.sound.rate / config.fps) * CHANNELS;
-        mix_buffer = new uint16_t[buffer_size];
+        // Create Buffer For Mixing (use size_t to prevent uint16_t overflow)
+        const size_t fps_denom = config.fps > 0 ? static_cast<size_t>(config.fps) : 60u;
+        const size_t buffer_samples_per_tick = (static_cast<size_t>(config.sound.rate) / fps_denom) * static_cast<size_t>(CHANNELS) + static_cast<size_t>(SAMPLES) * 2u;
+        mix_buffer = new uint16_t[buffer_samples_per_tick];
 
         clear_buffers();
         clear_wav();
 
-        SDL_PauseAudioDevice(dev,0);
+        SDL_PauseAudioDevice(dev, 0);
     }
 }
 
 void Audio::clear_buffers()
 {
-    dsp_read_pos  = 0;
     int specified_delay_samps = (config.sound.rate * SND_DELAY) / 1000;
-    dsp_write_pos = (specified_delay_samps+SAMPLES) * bytes_per_sample;
+    int initial_write_pos = (specified_delay_samps + SAMPLES) * bytes_per_sample;
+    dsp_read_pos.store(0, std::memory_order_relaxed);
+    dsp_write_pos.store(initial_write_pos, std::memory_order_release);
     avg_gap = 0.0;
     gap_est = 0;
 
-    for (int i = 0; i < dsp_buffer_bytes; i++)
-        dsp_buffer[i] = 0;
+    if (dsp_buffer && dsp_buffer_bytes > 0)
+        std::memset(dsp_buffer, 0, static_cast<size_t>(dsp_buffer_bytes));
 
-    uint16_t buffer_size = (config.sound.rate / config.fps) * CHANNELS;
-    for (int i = 0; i < buffer_size; i++)
-        mix_buffer[i] = 0;
+    const size_t fps_denom = config.fps > 0 ? static_cast<size_t>(config.fps) : 60u;
+    const size_t buffer_samples_per_tick = (static_cast<size_t>(config.sound.rate) / fps_denom) * static_cast<size_t>(CHANNELS) + static_cast<size_t>(SAMPLES) * 2u;
+    if (mix_buffer)
+        std::memset(mix_buffer, 0, buffer_samples_per_tick * sizeof(uint16_t));
 
-    callbacktick = 0;
+    callbacktick.store(0, std::memory_order_relaxed);
 }
 
 void Audio::stop_audio()
@@ -161,39 +162,41 @@ void Audio::stop_audio()
     {
         sound_enabled = false;
 
-        SDL_PauseAudioDevice(dev,1);
-        SDL_CloseAudioDevice(dev);
+        if (dev != 0)
+        {
+            SDL_PauseAudioDevice(dev, 1);
+            SDL_CloseAudioDevice(dev);
+            dev = 0;
+        }
 
         delete[] dsp_buffer;
+        dsp_buffer = nullptr;
         delete[] mix_buffer;
+        mix_buffer = nullptr;
     }
 }
 
 void Audio::pause_audio()
 {
-    if (sound_enabled)
+    if (sound_enabled && dev != 0)
     {
-        SDL_PauseAudioDevice(dev,1);
+        SDL_PauseAudioDevice(dev, 1);
     }
 }
 
 void Audio::resume_audio()
 {
-    if (sound_enabled)
+    if (sound_enabled && dev != 0)
     {
         clear_buffers();
-        SDL_PauseAudioDevice(dev,0);
+        SDL_PauseAudioDevice(dev, 0);
     }
 }
 
 // Called every frame to update the audio
 void Audio::tick()
 {
-    int bytes_written = 0;
-    int newpos;
-    double bytes_per_ms;
-
-    if (!sound_enabled) return;
+    if (!sound_enabled || !dsp_buffer || dsp_buffer_bytes <= 0) return;
 
     // Update audio streams from PCM & YM Devices
     osoundint.pcm->stream_update();
@@ -206,110 +209,102 @@ void Audio::tick()
 
     int samples_written = osoundint.pcm->buffer_size;
 
-    // And mix them into the mix_buffer
+    // Mix them into the mix_buffer
     for (int i = 0; i < samples_written; i++)
     {
-        int32_t mix_data = wav_buffer[wavfile.pos] + pcm_buffer[i] + ym_buffer[i];
+        int32_t mix_data = static_cast<int32_t>(wav_buffer[wavfile.pos]) +
+                           static_cast<int32_t>(pcm_buffer[i]) +
+                           static_cast<int32_t>(ym_buffer[i]);
 
-        // Clip mix data
         if (mix_data > INT16_MAX) mix_data = INT16_MAX;
         else if (mix_data < INT16_MIN) mix_data = INT16_MIN;
 
-        mix_buffer[i] = mix_data;
+        mix_buffer[i] = static_cast<uint16_t>(mix_data);
 
-        // Loop wav files
         if (++wavfile.pos >= wavfile.length)
             wavfile.pos = 0;
     }
 
-    // Cast mix_buffer to a byte array, to align it with internal SDL format 
-    uint8_t* mbuf8 = (uint8_t*) mix_buffer;
+    const uint8_t* mbuf8 = reinterpret_cast<const uint8_t*>(mix_buffer);
+    const double bytes_per_ms = static_cast<double>(bytes_per_sample) * (static_cast<double>(config.sound.rate) / 1000.0);
+    const int bytes_written = (BITS == 8 ? samples_written : samples_written * 2);
 
-    // produce samples from the sound emulation
-    bytes_per_ms = (bytes_per_sample) * (config.sound.rate/1000.0);
-    bytes_written = (BITS == 8 ? samples_written : samples_written*2);
-    
-    SDL_LockAudio();
+    int write_pos = dsp_write_pos.load(std::memory_order_relaxed);
+    int read_pos  = dsp_read_pos.load(std::memory_order_acquire);
+    int gap = write_pos - read_pos;
 
-    // this is the gap as of the most recent callback
-    int gap = dsp_write_pos - dsp_read_pos;
-    // an estimation of the current gap, adding time since then
-    if (callbacktick != 0)
-        gap_est = (int) (gap - (bytes_per_ms)*(SDL_GetTicks() - callbacktick));
-
-    // if there isn't enough room...
-    while (gap + bytes_written > dsp_buffer_bytes) 
+    const Uint32 last_cb = callbacktick.load(std::memory_order_acquire);
+    if (last_cb != 0)
     {
-        // then we allow the callback to run..
-        SDL_UnlockAudio();
-        // and delay until it runs and allows space.
-        SDL_Delay(1);
-        SDL_LockAudio();
-        //printf("sound buffer overflow:%d %d\n",gap, dsp_buffer_bytes);
-        gap = dsp_write_pos - dsp_read_pos;
+        const Uint32 now = SDL_GetTicks();
+        gap_est = static_cast<int>(static_cast<double>(gap) - bytes_per_ms * static_cast<double>(now - last_cb));
     }
-    // now we copy the data into the buffer and adjust the positions
-    newpos = dsp_write_pos + bytes_written;
-    if (newpos/dsp_buffer_bytes == dsp_write_pos/dsp_buffer_bytes) 
-    {
-        // no wrap
-        memcpy(dsp_buffer+(dsp_write_pos%dsp_buffer_bytes), mbuf8, bytes_written);
-    }
-    else 
-    {
-        // wraps
-        int first_part_size = dsp_buffer_bytes - (dsp_write_pos%dsp_buffer_bytes);
-        memcpy(dsp_buffer+(dsp_write_pos%dsp_buffer_bytes), mbuf8, first_part_size);
-        memcpy(dsp_buffer, mbuf8+first_part_size, bytes_written-first_part_size);
-    }
-    dsp_write_pos = newpos;
 
-    // Sound callback has not yet been called
-    if (callbacktick == 0)
-        dsp_read_pos += bytes_written;
-
-    while (dsp_read_pos > dsp_buffer_bytes) 
+    // Non-blocking overflow guard: advance read_pos rather than sleeping on the main tick
+    if (gap + bytes_written > dsp_buffer_bytes)
     {
-        dsp_write_pos -= dsp_buffer_bytes;
-        dsp_read_pos -= dsp_buffer_bytes;
+        const int overflow = (gap + bytes_written) - dsp_buffer_bytes;
+        read_pos += overflow;
+        dsp_read_pos.store(read_pos, std::memory_order_release);
+        gap = write_pos - read_pos;
     }
-    SDL_UnlockAudio();
+
+    const int newpos = write_pos + bytes_written;
+    if (newpos / dsp_buffer_bytes == write_pos / dsp_buffer_bytes)
+    {
+        std::memcpy(dsp_buffer + (write_pos % dsp_buffer_bytes), mbuf8, static_cast<size_t>(bytes_written));
+    }
+    else
+    {
+        const int first_part_size = dsp_buffer_bytes - (write_pos % dsp_buffer_bytes);
+        std::memcpy(dsp_buffer + (write_pos % dsp_buffer_bytes), mbuf8, static_cast<size_t>(first_part_size));
+        std::memcpy(dsp_buffer, mbuf8 + first_part_size, static_cast<size_t>(bytes_written - first_part_size));
+    }
+
+    if (last_cb == 0)
+    {
+        read_pos += bytes_written;
+    }
+
+    while (read_pos > dsp_buffer_bytes)
+    {
+        write_pos -= dsp_buffer_bytes;
+        read_pos  -= dsp_buffer_bytes;
+    }
+
+    dsp_read_pos.store(read_pos, std::memory_order_release);
+    dsp_write_pos.store(newpos, std::memory_order_release);
 }
 
 // Adjust the speed of the emulator, based on audio streaming performance.
-// This ensures that we avoid pops and crackles (in theory). 
 double Audio::adjust_speed()
 {
     if (!sound_enabled)
         return 1.0;
 
-    double alpha = 2.0 / (1.0+40.0);
-    int gap_too_small;
-    int gap_too_large;
+    const double alpha = 2.0 / (1.0 + 40.0);
     static bool inited = false;
 
-    if (!inited) 
+    if (!inited)
     {
         inited = true;
         avg_gap = gap_est;
     }
-    else 
+    else
     {
-        avg_gap = avg_gap + alpha * (gap_est - avg_gap);
+        avg_gap = avg_gap + alpha * (static_cast<double>(gap_est) - avg_gap);
     }
 
-    gap_too_small = (SND_DELAY * config.sound.rate * bytes_per_sample)/1000;
-    gap_too_large = ((SND_DELAY + SND_SPREAD) * config.sound.rate * bytes_per_sample)/1000;
-    
-    if (avg_gap < gap_too_small) 
+    const int gap_too_small = (SND_DELAY * config.sound.rate * bytes_per_sample) / 1000;
+    const int gap_too_large = ((SND_DELAY + SND_SPREAD) * config.sound.rate * bytes_per_sample) / 1000;
+
+    if (avg_gap < gap_too_small)
     {
-        double speed = 0.9;
-        return speed;
+        return 0.9;
     }
     if (avg_gap > gap_too_large)
     {
-        double speed = 1.1;
-        return speed;
+        return 1.1;
     }
     return 1.0;
 }
@@ -323,59 +318,51 @@ void Audio::load_wav(const char* filename)
     {
         clear_wav();
 
-        // Load Wav File
         SDL_AudioSpec wave;
-    
-        uint8_t *data;
-        uint32_t length;
+        uint8_t *data = nullptr;
+        uint32_t length = 0;
 
         pause_audio();
 
-        if( SDL_LoadWAV(filename, &wave, &data, &length) == NULL)
+        if (SDL_LoadWAV(filename, &wave, &data, &length) == nullptr)
         {
             wavfile.loaded = 0;
             resume_audio();
             std::cout << "Could not load wav: " << filename << std::endl;
             return;
         }
-        
-        SDL_LockAudio();
 
-        // Halve Volume Of Wav File
         uint8_t* data_vol = new uint8_t[length];
         SDL_MixAudioFormat(data_vol, data, wave.format, length, SDL_MIX_MAXVOLUME / 2);
 
-        // WAV File Needs Conversion To Target Format
         if (wave.format != AUDIO_S16 || wave.channels != 2 || wave.freq != config.sound.rate)
         {
             SDL_AudioCVT cvt;
             SDL_BuildAudioCVT(&cvt, wave.format, wave.channels, wave.freq,
-                                    AUDIO_S16,   CHANNELS,      config.sound.rate);
+                              AUDIO_S16, CHANNELS, config.sound.rate);
 
-            cvt.buf = (uint8_t*) malloc(length*cvt.len_mult);
-            memcpy(cvt.buf, data_vol, length);
-            cvt.len = length;
+            cvt.buf = static_cast<uint8_t*>(std::malloc(static_cast<size_t>(length) * static_cast<size_t>(cvt.len_mult)));
+            std::memcpy(cvt.buf, data_vol, length);
+            cvt.len = static_cast<int>(length);
             SDL_ConvertAudio(&cvt);
             SDL_FreeWAV(data);
             delete[] data_vol;
 
-            wavfile.data = (int16_t*) cvt.buf;
+            wavfile.data = reinterpret_cast<int16_t*>(cvt.buf);
             wavfile.length = cvt.len_cvt / 2;
             wavfile.pos = 0;
             wavfile.loaded = 1;
         }
-        // No Conversion Needed
         else
         {
             SDL_FreeWAV(data);
-            wavfile.data = (int16_t*) data_vol;
+            wavfile.data = reinterpret_cast<int16_t*>(data_vol);
             wavfile.length = length / 2;
             wavfile.pos = 0;
             wavfile.loaded = 2;
         }
 
         resume_audio();
-        SDL_UnlockAudio();
     }
 }
 
@@ -384,9 +371,9 @@ void Audio::clear_wav()
     if (wavfile.loaded)
     {
         if (wavfile.loaded == 1)
-            free(wavfile.data);
+            std::free(wavfile.data);
         else
-            delete[] wavfile.data;        
+            delete[] wavfile.data;
     }
 
     wavfile.length = 1;
@@ -396,58 +383,63 @@ void Audio::clear_wav()
 }
 
 // SDL Audio Callback Function
-//
-// Called when the audio device is ready for more data.
-//
-// stream:  A pointer to the audio buffer to be filled
-// len:     The length (in bytes) of the audio buffer
-
-void fill_audio(void *udata, Uint8 *stream, int len)
+extern "C" void fill_audio(void *udata, Uint8 *stream, int len)
 {
-    int gap;
-    int newpos;
+    (void)udata;
+    if (!dsp_buffer || dsp_buffer_bytes <= 0 || len <= 0)
+    {
+        if (len > 0) std::memset(stream, 0, static_cast<size_t>(len));
+        return;
+    }
+
     int underflow_amount = 0;
 #define MAX_SAMPLE_SIZE 4
     static char last_bytes[MAX_SAMPLE_SIZE];
 
-    gap = dsp_write_pos - dsp_read_pos;
-    if (gap < len) 
+    const int write_pos = dsp_write_pos.load(std::memory_order_acquire);
+    int read_pos = dsp_read_pos.load(std::memory_order_relaxed);
+    int gap = write_pos - read_pos;
+
+    if (gap < 0) gap = 0;
+
+    if (gap < len)
     {
         underflow_amount = len - gap;
         len = gap;
     }
-    newpos = dsp_read_pos + len;
 
-    // No Wrap
-    if (newpos/dsp_buffer_bytes == dsp_read_pos/dsp_buffer_bytes) 
+    const int newpos = read_pos + len;
+
+    if (len > 0)
     {
-        memcpy(stream, dsp_buffer + (dsp_read_pos%dsp_buffer_bytes), len);
-    }
-    // Wrap
-    else 
-    {
-        int first_part_size = dsp_buffer_bytes - (dsp_read_pos%dsp_buffer_bytes);
-        memcpy(stream,  dsp_buffer + (dsp_read_pos%dsp_buffer_bytes), first_part_size);
-        memcpy(stream + first_part_size, dsp_buffer, len - first_part_size);
-    }
-    // Save the last sample as we may need it to fill underflow
-    if (gap >= bytes_per_sample) 
-    {
-        memcpy(last_bytes, stream + len - bytes_per_sample, bytes_per_sample);
-    }
-    // Just repeat the last good sample if underflow
-    if (underflow_amount > 0 ) 
-    {
-        int i;
-        for (i = 0; i < underflow_amount/bytes_per_sample; i++) 
+        if (newpos / dsp_buffer_bytes == read_pos / dsp_buffer_bytes)
         {
-            memcpy(stream + len +i*bytes_per_sample, last_bytes, bytes_per_sample);
+            std::memcpy(stream, dsp_buffer + (read_pos % dsp_buffer_bytes), static_cast<size_t>(len));
+        }
+        else
+        {
+            const int first_part_size = dsp_buffer_bytes - (read_pos % dsp_buffer_bytes);
+            std::memcpy(stream, dsp_buffer + (read_pos % dsp_buffer_bytes), static_cast<size_t>(first_part_size));
+            std::memcpy(stream + first_part_size, dsp_buffer, static_cast<size_t>(len - first_part_size));
+        }
+
+        if (len >= bytes_per_sample && bytes_per_sample <= MAX_SAMPLE_SIZE)
+        {
+            std::memcpy(last_bytes, stream + len - bytes_per_sample, static_cast<size_t>(bytes_per_sample));
         }
     }
-    dsp_read_pos = newpos;
 
-    // Record the tick at which the callback occured.
-    callbacktick = SDL_GetTicks();
+    if (underflow_amount > 0 && bytes_per_sample > 0)
+    {
+        const int num_samples = underflow_amount / bytes_per_sample;
+        for (int i = 0; i < num_samples; i++)
+        {
+            std::memcpy(stream + len + i * bytes_per_sample, last_bytes, static_cast<size_t>(bytes_per_sample));
+        }
+    }
+
+    dsp_read_pos.store(newpos, std::memory_order_release);
+    callbacktick.store(SDL_GetTicks(), std::memory_order_release);
 }
 
 #endif
