@@ -129,12 +129,4 @@ if(TARGET ax::core)
 elseif(TARGET ax_sdk)
   add_dependencies(eduke32_build ax_sdk)
 endif()
-```[cite: 26]
 
-Once you paste that in your GitHub browser tab, verify that `eduke32_build` configures without CMake warnings and that `GNUmakefile` or `Common.mak` picks up `AX_RETRO_BRIDGE_LIB` if needed[cite: 25, 26].
-
-<ElicitationsGroup message="If you want to inspect the next piece of EDuke32 in your browser:">
-  <Elicitation label="Check GNUmakefile & Common.mak" query="Let's check engines/eduke32/GNUmakefile and Common.mak for AX_RETRO_BRIDGE_LIB and compiler flags."/>
-  <Elicitation label="Check EDuke32 audio/video" query="Let's check EDuke32's audio and Polymost/video loop for deterministic timing."/>
-  <Elicitation label="Move to next engine" query="Which other engine or workflow file in Generation-X-AX or Piccolo-AX should we review next?"/>
-</ElicitationsGroup>
