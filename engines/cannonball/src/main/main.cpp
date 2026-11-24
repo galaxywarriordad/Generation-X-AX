@@ -33,6 +33,13 @@
 // Fine to include on non-windows builds as dummy functions used.
 #include "directx/ffeedback.hpp"
 
+#if defined(__has_include)
+#if __has_include("ax/topology.hpp")
+#include "ax/topology.hpp"
+#define CANNONBALL_HAS_AX_TOPOLOGY 1
+#endif
+#endif
+
 // ------------------------------------------------------------------------------------------------
 // Initialize Shared Variables
 // ------------------------------------------------------------------------------------------------
@@ -48,11 +55,18 @@ int    cannonball::fps_counter = 0;
 // Main Variables and Pointers
 // ------------------------------------------------------------------------------------------------
 Audio cannonball::audio;
-Menu* menu;
-bool pause_engine;
-
+Menu* menu = nullptr;
+bool pause_engine = false;
 
 // ------------------------------------------------------------------------------------------------
+
+static void apply_ax_topology_hints()
+{
+#if defined(CANNONBALL_HAS_AX_TOPOLOGY)
+    // Align foreground emulation / render work with [AX] physical core policy
+    ax::topology::apply_default_emulation_affinity();
+#endif
+}
 
 static void quit_func(int code)
 {
@@ -60,6 +74,7 @@ static void quit_func(int code)
     input.close_joy();
     forcefeedback::close();
     delete menu;
+    menu = nullptr;
     SDL_Quit();
     exit(code);
 }
@@ -68,13 +83,11 @@ static void process_events(void)
 {
     SDL_Event event;
 
-    // Grab all events from the queue.
-    while(SDL_PollEvent(&event))
+    while (SDL_PollEvent(&event))
     {
-        switch(event.type)
+        switch (event.type)
         {
             case SDL_KEYDOWN:
-                // Handle key presses.
                 if (event.key.keysym.sym == SDLK_ESCAPE)
                     state = STATE_QUIT;
                 else
@@ -122,7 +135,6 @@ static void process_events(void)
                 break;
 
             case SDL_QUIT:
-                // Handle quit requests (like Ctrl-c).
                 state = STATE_QUIT;
                 break;
         }
@@ -133,9 +145,8 @@ static void tick()
 {
     frame++;
 
-    // Non standard FPS: Determine whether to tick certain logic for the current frame.
     if (config.fps == 60)
-        tick_frame = frame & 1;
+        tick_frame = (frame & 1) != 0;
     else if (config.fps == 120)
         tick_frame = (frame & 3) == 1;
 
@@ -143,10 +154,10 @@ static void tick()
 
     if (tick_frame)
     {
-        oinputs.tick();           // Do Controls
-        oinputs.do_gear();        // Digital Gear
+        oinputs.tick();
+        oinputs.do_gear();
     }
-     
+
     switch (state)
     {
         case STATE_GAME:
@@ -165,7 +176,7 @@ static void tick()
                 osoundint.tick();
             }
             else
-            {                
+            {
                 if (tick_frame) input.frame_done();
             }
         }
@@ -199,62 +210,58 @@ static void tick()
             break;
     }
 
-    // Map OutRun outputs to CannonBall devices (SmartyPi Interface / Controller Rumble)
     outrun.outputs->writeDigitalToConsole();
     if (tick_frame)
     {
-         input.set_rumble(outrun.outputs->is_set(OOutputs::D_MOTOR), config.controls.rumble);
+        input.set_rumble(outrun.outputs->is_set(OOutputs::D_MOTOR), config.controls.rumble);
     }
 }
 
 static void main_loop()
 {
-    // FPS Counter (If Enabled)
     Timer fps_count;
-    int frame = 0;
+    int local_frame = 0;
     fps_count.start();
 
-    // General Frame Timing
-    bool vsync = config.video.vsync == 1 && video.supports_vsync();
+    const bool vsync = config.video.vsync == 1 && video.supports_vsync();
     Timer frame_time;
-    int t;                              // Actual timing of tick in ms as measured by SDL (ms)
-    double deltatime  = 0;              // Time we want an entire frame to take (ms)
-    int deltaintegral = 0;              // Integer version of above
+    double deltatime = 0.0;
 
     while (state != STATE_QUIT)
     {
         frame_time.start();
-        // Tick Engine
         tick();
 
-        // Draw SDL Video
         video.prepare_frame();
         video.render_frame();
 
-        // Fill SDL Audio Buffer For Callback
         audio.tick();
-        
-        // Calculate Timings. Cap Frame Rate. Note this might be trumped by V-Sync
+
         if (!vsync)
         {
             deltatime += (frame_ms * audio.adjust_speed());
-            deltaintegral = (int)deltatime;
-            t = frame_time.get_ticks();
-            
-            if (t < deltatime)
-                SDL_Delay((Uint32)(deltatime - t));
+            const int deltaintegral = static_cast<int>(deltatime);
+            const int t = frame_time.get_ticks();
 
-            deltatime -= deltaintegral;
+            if (static_cast<double>(t) < deltatime)
+            {
+                const double remaining = deltatime - static_cast<double>(t);
+                if (remaining >= 1.0)
+                {
+                    SDL_Delay(static_cast<Uint32>(remaining));
+                }
+            }
+
+            deltatime -= static_cast<double>(deltaintegral);
         }
 
         if (config.video.fps_count)
         {
-            frame++;
-            // One second has elapsed
+            local_frame++;
             if (fps_count.get_ticks() >= 1000)
             {
-                fps_counter = frame;
-                frame       = 0;
+                fps_counter = local_frame;
+                local_frame = 0;
                 fps_count.start();
             }
         }
@@ -263,19 +270,17 @@ static void main_loop()
     quit_func(0);
 }
 
-// Very (very) simple command line parser.
-// Returns true if everything is ok to proceed with launching th engine.
 static bool parse_command_line(int argc, char* argv[])
 {
     for (int i = 0; i < argc; i++)
     {
-        if (strcmp(argv[i], "-cfgfile") == 0 && i+1 < argc)
+        if (strcmp(argv[i], "-cfgfile") == 0 && i + 1 < argc)
         {
-            config.set_config_file(argv[i+1]);
+            config.set_config_file(argv[i + 1]);
         }
-        else if (strcmp(argv[i], "-file") == 0 && i+1 < argc)
+        else if (strcmp(argv[i], "-file") == 0 && i + 1 < argc)
         {
-            if (!trackloader.set_layout_track(argv[i+1]))
+            if (!trackloader.set_layout_track(argv[i + 1]))
                 return false;
         }
         else if (strcmp(argv[i], "-help") == 0)
@@ -291,12 +296,13 @@ static bool parse_command_line(int argc, char* argv[])
 
 int main(int argc, char* argv[])
 {
-    // Parse command line arguments (config file location, LayOut data) 
+    apply_ax_topology_hints();
+
     bool ok = parse_command_line(argc, argv);
 
     if (ok)
     {
-        config.load(); // Load config.XML file
+        config.load();
         ok = roms.load_revb_roms(config.sound.fix_samples);
     }
     if (!ok)
@@ -305,44 +311,36 @@ int main(int argc, char* argv[])
         return 0;
     }
 
-    // Load gamecontrollerdb.txt mappings
     if (SDL_GameControllerAddMappingsFromFile((config.data.res_path + "gamecontrollerdb.txt").c_str()) == -1)
         std::cout << "Unable to load controller mapping" << std::endl;
 
-    // Initialize timer and video systems
     if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) == -1)
     {
         std::cerr << "SDL Initialization Failed: " << SDL_GetError() << std::endl;
         return 1;
     }
 
-    // Load patched widescreen tilemaps
     if (!omusic.load_widescreen_map(config.data.res_path))
         std::cout << "Unable to load widescreen tilemaps" << std::endl;
 
-    // Initialize SDL Video
     config.set_fps(config.video.fps);
     if (!video.init(&roms, &config.video))
         quit_func(1);
 
-    // Initialize SDL Audio
     audio.init();
 
     state = config.menu.enabled ? STATE_INIT_MENU : STATE_INIT_GAME;
 
-    // Initalize SDL Controls
     input.init(config.controls.pad_id,
-               config.controls.keyconfig, config.controls.padconfig, 
+               config.controls.keyconfig, config.controls.padconfig,
                config.controls.analog,    config.controls.axis, config.controls.invert, config.controls.asettings);
 
-    if (config.controls.haptic) 
+    if (config.controls.haptic)
         config.controls.haptic = forcefeedback::init(config.controls.max_force, config.controls.min_force, config.controls.force_duration);
-        
-    // Populate menus
+
     menu = new Menu();
     menu->populate();
-    main_loop();  // Loop until we quit the app
+    main_loop();
 
-    // Never Reached
     return 0;
 }
