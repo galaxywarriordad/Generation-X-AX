@@ -572,6 +572,3 @@ if(UNIX AND NOT APPLE)
 		DESTINATION "${CMAKE_INSTALL_DATADIR}/mupen64plus"
 	)
 endif(UNIX AND NOT APPLE)
-```[cite: 16]
-
-Which file in `Generation-X-AX` or `Piccolo-AX` would you like to inspect next in your browser?
