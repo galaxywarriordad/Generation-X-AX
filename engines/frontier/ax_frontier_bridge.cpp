@@ -1,5 +1,6 @@
 #include "ax_frontier_bridge.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -63,7 +64,8 @@ int ax_frontier_fastmem_alloc(size_t size, uint32_t flags, ax_frontier_arena_t* 
   if (!out_arena || size == 0) {
     return -1;
   }
-  void* mem = std::aligned_alloc(64, ((size + 63u) / 64u) * 64u);
+  const size_t aligned_size = ((size + 63u) / 64u) * 64u;
+  void* mem = std::aligned_alloc(64, aligned_size);
   if (!mem) {
     return -1;
   }
@@ -85,3 +87,23 @@ void ax_frontier_fastmem_free(ax_frontier_arena_t* arena) {
 }
 
 } // extern "C"
+
+#if defined(AX_FRONTIER_STUB_MAIN)
+int main(int argc, char** argv) {
+  (void)argc;
+  (void)argv;
+
+  const int pin_rc = ax_frontier_pin_thread(AX_FRONTIER_DOMAIN_GUEST_JIT, 0);
+  ax_frontier_report_audio_metrics(48000, 256, 0);
+
+  ax_frontier_arena_t arena{};
+  const int alloc_rc = ax_frontier_fastmem_alloc(4096, 0, &arena);
+  if (alloc_rc == 0 && arena.ptr) {
+    std::memset(arena.ptr, 0xA5, 64);
+    ax_frontier_fastmem_free(&arena);
+  }
+
+  std::printf("[frontier-fe2 stub] pin_rc=%d alloc_rc=%d\n", pin_rc, alloc_rc);
+  return (alloc_rc == 0) ? 0 : 1;
+}
+#endif
