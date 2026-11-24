@@ -15,6 +15,17 @@ if [[ ! -f "${ROM_PATH}" ]]; then
     exit 1
 fi
 
+if [[ -n "${PRESET_OVERRIDE}" ]]; then
+    case "${PRESET_OVERRIDE}" in
+        stock_cycle_exact|coprocessor_boost|low_latency_input)
+            ;;
+        *)
+            echo "[ax-snes] Unknown preset: ${PRESET_OVERRIDE}" >&2
+            exit 2
+            ;;
+    esac
+fi
+
 SHM_BASE="/dev/shm/piccolo-ax/snes"
 SHM_ROM_DIR="${SHM_BASE}/roms"
 SHM_SAVE_DIR="${SHM_BASE}/saves"
