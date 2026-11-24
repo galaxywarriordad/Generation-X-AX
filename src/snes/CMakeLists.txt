@@ -1,5 +1,6 @@
 add_library(ax_genx_snes STATIC
     ax_snes_adapter.cpp
+    snes_core_host.cpp
 )
 
 target_include_directories(ax_genx_snes
