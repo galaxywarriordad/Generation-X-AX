@@ -10,10 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Delete Android and Apple files
+        with:
+          submodules: false
+      - name: Delete Android, Apple, and orphaned gitlink files
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@://github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git ls-files | grep -iE "(^|/)(android|ios|macos|osx)(/|_|\.)|(_android|_ios|_osx|_macos|\.mm$)" | xargs -r git rm -f
-          git commit -m "Remove Android and Apple platform files" || exit 0
+          git ls-files -s | awk '$1 == "160000" { print $4 }' | xargs -r git rm --cached
+          git commit -m "Remove Android/Apple files and orphaned submodule gitlinks" || exit 0
           git push
