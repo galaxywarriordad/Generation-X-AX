@@ -969,14 +969,3 @@ printutils: printtools
 test: kenbuild
 utils: tools
 veryclean: clean
-```[cite: 32]
-
-### Verification for This Step
-* **Dry-run / flag check:** Run `make -j4 -n V=1` inside `engines/eduke32` (or via your build pipeline) and confirm `-march=skylake -mbmi -mbmi2 -flto=thin`, `-ffile-prefix-map`, and `-Wl,--build-id=sha1` appear on compile and link lines.
-* **`sdlayer.cpp` check:** Notice your screenshot had `sdlayer.cpp` typed in the GitHub file search bar while `player.cpp` was selected—open `engines/eduke32/source/build/src/sdlayer.cpp` directly if you want to review SDL audio/window/thread handling there next.
-
-<ElicitationsGroup message="What would you like to inspect or do next?">
-  <Elicitation label="Review sdlayer.cpp next" query="Let's review engines/eduke32/source/build/src/sdlayer.cpp next."/>
-  <Elicitation label="Trigger GitHub Actions build" query="I've updated GNUmakefile—let's check what to verify in the GitHub Actions build."/>
-  <Elicitation label="Check another engine file" query="Let's check another source file in Generation-X-AX next."/>
-</ElicitationsGroup>
