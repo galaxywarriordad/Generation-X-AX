@@ -17,6 +17,24 @@ endif
 ### Platform and Toolchain Configuration
 include Common.mak
 
+### Deterministic [AX] Flags (i5-9600K Skylake + BMI2 + ThinLTO + Reproducible)
+AX_SRC_ROOT := $(abspath $(CURDIR)/../..)
+AX_PREFIX_FLAGS := -ffile-prefix-map=$(abspath $(CURDIR))=. -ffile-prefix-map=$(AX_SRC_ROOT)=.
+AX_ARCH_FLAGS := -march=skylake -mbmi -mbmi2 -O3 -flto=thin $(AX_PREFIX_FLAGS)
+AX_LD_FLAGS := -flto=thin -Wl,--build-id=sha1
+
+COMPILERFLAGS += $(AX_ARCH_FLAGS)
+LINKERFLAGS += $(AX_LD_FLAGS)
+
+ifneq ($(strip $(AX_SDK_DIR)),)
+    COMPILERFLAGS += -DAX_HAS_SDK=1 -I$(AX_SDK_DIR)/include
+    LIBS += -L$(AX_SDK_DIR)/lib -lax_core
+endif
+
+ifneq ($(strip $(AX_RETRO_BRIDGE_LIB)),)
+    LIBS += $(AX_RETRO_BRIDGE_LIB)
+endif
+
 ### File Extensions
 asm := nasm
 o := o
@@ -26,9 +44,6 @@ source := source
 obj := obj
 
 ### Functions
-# Some of this still needs work--"getfiltered" takes a list of files and strips the paths off of them,
-# while the other functions end up expanding the result later by adding the paths back.
-# This is inefficient, but it was a better use of time than reworking all of this at the moment.
 define parent
 $(word 1,$(subst _, ,$1))
 endef
@@ -954,3 +969,14 @@ printutils: printtools
 test: kenbuild
 utils: tools
 veryclean: clean
+```[cite: 32]
+
+### Verification for This Step
+* **Dry-run / flag check:** Run `make -j4 -n V=1` inside `engines/eduke32` (or via your build pipeline) and confirm `-march=skylake -mbmi -mbmi2 -flto=thin`, `-ffile-prefix-map`, and `-Wl,--build-id=sha1` appear on compile and link lines.
+* **`sdlayer.cpp` check:** Notice your screenshot had `sdlayer.cpp` typed in the GitHub file search bar while `player.cpp` was selected—open `engines/eduke32/source/build/src/sdlayer.cpp` directly if you want to review SDL audio/window/thread handling there next.
+
+<ElicitationsGroup message="What would you like to inspect or do next?">
+  <Elicitation label="Review sdlayer.cpp next" query="Let's review engines/eduke32/source/build/src/sdlayer.cpp next."/>
+  <Elicitation label="Trigger GitHub Actions build" query="I've updated GNUmakefile—let's check what to verify in the GitHub Actions build."/>
+  <Elicitation label="Check another engine file" query="Let's check another source file in Generation-X-AX next."/>
+</ElicitationsGroup>
