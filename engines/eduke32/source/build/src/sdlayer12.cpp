@@ -46,34 +46,28 @@ int32_t sdlayer_checkversion(void)
 
     SDL_VERSION(&compiled);
 
-    int constexpr bufsiz = 128;
-    auto buf = (char*)Balloca(bufsiz);
-    buf[0] = 0;
+    char buf[128];
+    buf[0] = '\0';
 
-    if (!Bmemcmp(&compiled, &linked, sizeof(SDL_version)))
-        Bsnprintf(buf, bufsiz, "Initializing SDL %d.%d.%d", compiled.major, compiled.minor, compiled.patch);
+    if (!Bmemcmp(&compiled, linked, sizeof(SDL_version)))
+        Bsnprintf(buf, sizeof(buf), "Initializing SDL %d.%d.%d", compiled.major, compiled.minor, compiled.patch);
     else
-        Bsnprintf(buf, bufsiz, "Initializing SDL %d.%d.%d (built against version %d.%d.%d)",
+        Bsnprintf(buf, sizeof(buf), "Initializing SDL %d.%d.%d (built against version %d.%d.%d)",
             linked->major, linked->minor, linked->patch, compiled.major, compiled.minor, compiled.patch);
 
     LOG_F(INFO, "%s", buf);
 
     if (SDL_VERSIONNUM(linked->major, linked->minor, linked->patch) < SDL_REQUIREDVERSION)
     {
-        /*reject running under SDL versions older than what is stated in sdl_inc.h */
-        LOG_F(ERROR, "You need SDL %d.%d.%d or newer to run %s.",SDL_MIN_X,SDL_MIN_Y,SDL_MIN_Z,apptitle);
+        LOG_F(ERROR, "You need SDL %d.%d.%d or newer to run %s.", SDL_MIN_X, SDL_MIN_Y, SDL_MIN_Z, apptitle);
         return -1;
     }
 
     return 0;
 }
 
-//
-// initsystem() -- init SDL systems
-//
 int32_t initsystem(void)
 {
-    // TODO: Refactor the init sequence such that we don't need to duplicate this across both sdlayer objects.
 #if defined NOSDLPARACHUTE
     const int sdlinitflags = SDL_INIT_VIDEO | SDL_INIT_NOPARACHUTE;
 #else
@@ -105,7 +99,6 @@ int32_t initsystem(void)
     frameplace = 0;
     lockcount = 0;
 
-
     if (!novideo)
     {
         char drvname[32];
@@ -117,7 +110,7 @@ int32_t initsystem(void)
             nogl = 1;
         }
 #endif
-        if (SDL_VideoDriverName(drvname, 32))
+        if (SDL_VideoDriverName(drvname, sizeof(drvname)))
             LOG_F(INFO, "Using '%s' video driver.", drvname);
 
         wm_setapptitle(apptitle);
@@ -149,15 +142,15 @@ const char *joyGetName(int32_t what, int32_t num)
 {
     switch (what)
     {
-        case 0:	// axis
+        case 0:
             if ((unsigned)num > (unsigned)joystick.numAxes) return NULL;
             return joynames[0][num];
 
-        case 1: // button
+        case 1:
             if ((unsigned)num > (unsigned)joystick.numButtons) return NULL;
             return joynames[1][num];
 
-        case 2: // hat
+        case 2:
             if ((unsigned)num > (unsigned)joystick.numHats) return NULL;
             return joynames[2][num];
 
@@ -166,11 +159,6 @@ const char *joyGetName(int32_t what, int32_t num)
     }
 }
 #endif
-
-//
-// grabmouse_low() -- show/hide mouse cursor, lower level (doesn't check state).
-//                    furthermore return 0 if successful.
-//
 
 static inline char grabmouse_low(char a)
 {
@@ -205,9 +193,7 @@ void videoGetModes(int display)
         return;
 
     validmodecnt = 0;
-    //    initprintf("Detecting video modes:\n");
 
-    // do fullscreen modes first
     for (j = 0; cdepths[j]; j++)
     {
 #ifdef USE_OPENGL
@@ -217,7 +203,6 @@ void videoGetModes(int display)
         pf.BitsPerPixel = cdepths[j];
         pf.BytesPerPixel = cdepths[j] >> 3;
 
-        // We convert paletted contents to non-paletted
         modes = SDL_ListModes((cdepths[j] == 8) ? NULL : &pf, SURFACE_FLAGS | SDL_FULLSCREEN);
 
         if (modes == (SDL_Rect **)0)
@@ -252,7 +237,6 @@ void videoGetModes(int display)
 
     SDL_CHECKFSMODES(maxx, maxy);
 
-    // add windowed modes next
     for (j = 0; cdepths[j]; j++)
     {
 #ifdef USE_OPENGL
@@ -277,9 +261,6 @@ void videoGetModes(int display)
     modeschecked = 1;
 }
 
-//
-// setvideomode() -- set SDL video mode
-//
 int32_t videoSetMode(int32_t x, int32_t y, int32_t c, int32_t fs)
 {
     int32_t regrab = 0, ret;
@@ -300,18 +281,15 @@ int32_t videoSetMode(int32_t x, int32_t y, int32_t c, int32_t fs)
 
     VLOG_F(LOG_GFX, "Setting video mode %dx%d (%d-bpp %s).", x, y, c, ((fs & 1) ? "fullscreen" : "windowed"));
 
-    // restore gamma before we change video modes if it was changed
     if (nogl && sdl_surface && gammabrightness)
     {
         SDL_SetGammaRamp(sysgamma[0], sysgamma[1], sysgamma[2]);
-        gammabrightness = 0;  // redetect on next mode switch
+        gammabrightness = 0;
     }
     else if (sdl_surface)
         return setvideomode_sdlcommonpost(x, y, c, fs, regrab);
 
-    // deinit
     destroy_window_resources();
-
 
 #ifdef USE_OPENGL
     if (c > 8 || !nogl)
@@ -337,9 +315,6 @@ int32_t videoSetMode(int32_t x, int32_t y, int32_t c, int32_t fs)
 
         SDL_GL_ATTRIBUTES(i, sdlayer_gl_attributes);
 
-        /* HACK: changing SDL GL attribs only works before surface creation,
-            so we have to create a new surface in a different format first
-            to force the surface we WANT to be recreated instead of reused. */
         if (vsync_renderlayer != ovsync)
         {
             if (sdl_surface)
@@ -363,9 +338,8 @@ int32_t videoSetMode(int32_t x, int32_t y, int32_t c, int32_t fs)
         gladLoadGLLoader(SDL_GL_GetProcAddress);
     }
     else
-#endif  // defined USE_OPENGL
+#endif
     {
-        // We convert paletted contents to non-paletted
         sdl_surface = SDL_SetVideoMode(x, y, 0, SURFACE_FLAGS | ((fs & 1) ? SDL_FULLSCREEN : 0));
 
         if (!sdl_surface)
@@ -380,7 +354,6 @@ int32_t videoSetMode(int32_t x, int32_t y, int32_t c, int32_t fs)
     return 0;
 }
 
-// SDL 1.2 specific event handling
 int32_t handleevents_pollsdl(void)
 {
     int32_t code, rv = 0, j;
@@ -404,10 +377,9 @@ int32_t handleevents_pollsdl(void)
                         keyBufferInsert(ev.key.keysym.unicode & 0x7f);
                 }
 
-                // hook in the osd
                 if ((j = OSD_HandleScanCode(code, (ev.key.type == SDL_KEYDOWN))) <= 0)
                 {
-                    if (j == -1)  // osdkey
+                    if (j == -1)
                     {
                         for (j = 0; j < NUMKEYS; ++j)
                         {
@@ -434,7 +406,7 @@ int32_t handleevents_pollsdl(void)
                 else
                 {
 #ifdef __linux
-                    if (code == 0x59)  // pause
+                    if (code == 0x59)
                         break;
 #endif
                     keySetState(code, 0);
@@ -464,23 +436,18 @@ int32_t handleevents_pollsdl(void)
                 sdl_resize = { ev.resize.w & ~1, ev.resize.h & ~1 };
                 break;
 
-            // SDL_MOUSEMOTION needs to fall through to default... this is just GEKKO processing!
             case SDL_MOUSEMOTION:
 #ifdef GEKKO
-                // check if it's a wiimote pointer pretending to be a mouse
                 if (ev.motion.state & SDL_BUTTON_X2MASK)
                 {
-                    // the absolute values are used to draw the crosshair
                     g_mouseAbs.x = ev.motion.x;
                     g_mouseAbs.y = ev.motion.y;
-                    // hack: reduce the scale of the "relative" motions
-                    // to make it act more like a real mouse
                     ev.motion.xrel /= 16;
                     ev.motion.yrel /= 12;
                 }
 #endif
-            fallthrough__;
-            default: // OSD_Printf("Got event (%d)\n", ev.type); break;
+                fallthrough__;
+            default:
                 rv = handleevents_sdlcommon(&ev);
                 break;
         }
@@ -489,34 +456,38 @@ int32_t handleevents_pollsdl(void)
     return rv;
 }
 
-// from SDL HG, modified
 int32_t SDL_WaitEventTimeout(SDL_Event *event, int32_t timeout)
 {
     uint32_t expiration = 0;
 
     if (timeout > 0)
-        expiration = SDL_GetTicks() + timeout;
+        expiration = SDL_GetTicks() + static_cast<uint32_t>(timeout);
 
     for (;;)
     {
         SDL_PumpEvents();
-        switch (SDL_PeepEvents(event, 1, SDL_GETEVENT, ~0))  // SDL_FIRSTEVENT, SDL_LASTEVENT)) {
+        switch (SDL_PeepEvents(event, 1, SDL_GETEVENT, ~0))
         {
             case -1: return 0;
             case 1: return 1;
             case 0:
                 if (timeout == 0)
-                {
-                    /* Polling and no events, just return */
                     return 0;
-                }
-                if (timeout > 0 && ((int32_t)(SDL_GetTicks() - expiration) >= 0))
-                {
-                    /* Timeout expired and no events */
+                if (timeout > 0 && (static_cast<int32_t>(SDL_GetTicks() - expiration) >= 0))
                     return 0;
-                }
                 SDL_Delay(10);
                 break;
         }
     }
 }
+```[cite: 30]
+
+### Verification
+* **Compile check:** Paste the updated `sdlayer12.cpp` in your GitHub browser tab and run your build to confirm zero warnings or errors[cite: 30].
+* **Runtime check:** Verify EDuke32 / VoidSW / EKenBuild windowing, input, and frame pacing behave cleanly on your target build.
+
+<ElicitationsGroup message="What would you like to do next?">
+  <Elicitation label="Full sdlayer.cpp patch" query="Please give me a cleaned-up browser-ready update for sdlayer.cpp too."/>
+  <Elicitation label="Check GitHub Actions build" query="Let's check what to verify in the GitHub Actions build next."/>
+  <Elicitation label="Pick another file" query="Let's review another file in Generation-X-AX or Piccolo-AX."/>
+</ElicitationsGroup>
