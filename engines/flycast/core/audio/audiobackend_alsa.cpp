@@ -1,8 +1,16 @@
 #if USE_ALSA
 #include "audiostream.h"
 #include <alsa/asoundlib.h>
+#include <algorithm>
+#include <array>
+#include <cstring>
 #include "cfg/cfg.h"
 #include "cfg/option.h"
+
+namespace {
+constexpr snd_pcm_uframes_t kSilenceChunkFrames = 256;
+alignas(16) static const std::array<int16_t, kSilenceChunkFrames * 2> kZeroStereoFrames{};
+} // namespace
 
 class AlsaAudioBackend : public AudioBackend
 {
@@ -18,68 +26,46 @@ public:
 
 	bool init() override
 	{
-		snd_pcm_hw_params_t *params;
-
-		std::string device = config::loadStr("alsa", "device");
-
+		snd_pcm_hw_params_t *params = nullptr;
+		const std::string device = config::loadStr("alsa", "device");
+		std::string active_device = device;
 		int rc = -1;
-		if (!device.empty() && device != "auto") {
-			rc = snd_pcm_open(&handle, device.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
+
+		if (!active_device.empty() && active_device != "auto")
+		{
+			rc = snd_pcm_open(&handle, active_device.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
 			if (rc < 0)
-				WARN_LOG(AUDIO, "ALSA: Cannot open device %s. Trying auto", device.c_str());
+			{
+				ERROR_LOG(AUDIO, "ALSA: unable to open PCM device %s: %s", active_device.c_str(), snd_strerror(rc));
+				return false;
+			}
 		}
-		if (rc < 0)
+		else
 		{
 			INFO_LOG(AUDIO, "ALSA: trying to determine audio device");
-
-			// trying default device
-			device = "default";
-			rc = snd_pcm_open(&handle, device.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
-
-			// "default" didn't work, try first device
+			static constexpr const char *const kCandidates[] = {
+				"default", "plughw:0,0,0", "plughw:0,0", "plughw:1,0", "pulse"
+			};
+			for (const char *cand : kCandidates)
+			{
+				active_device = cand;
+				rc = snd_pcm_open(&handle, active_device.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
+				if (rc >= 0)
+					break;
+			}
 			if (rc < 0)
 			{
-				device = "plughw:0,0,0";
-				rc = snd_pcm_open(&handle, device.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
-
-				if (rc < 0)
-				{
-					device = "plughw:0,0";
-					rc = snd_pcm_open(&handle, device.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
-				}
-			}
-
-			// first didn't work, try second
-			if (rc < 0)
-			{
-				device = "plughw:1,0";
-				rc = snd_pcm_open(&handle, device.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
-			}
-
-			// try pulse audio backend
-			if (rc < 0)
-			{
-				device = "pulse";
-				rc = snd_pcm_open(&handle, device.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
-			}
-
-			if (rc < 0)
 				INFO_LOG(AUDIO, "ALSA: unable to automatically determine audio device.");
+				ERROR_LOG(AUDIO, "ALSA: unable to open PCM device %s: %s", active_device.c_str(), snd_strerror(rc));
+				return false;
+			}
 		}
 
-		if (rc < 0)
-		{
-			ERROR_LOG(AUDIO, "ALSA: unable to open PCM device %s: %s", device.c_str(), snd_strerror(rc));
-			return false;
-		}
+		INFO_LOG(AUDIO, "ALSA: Successfully initialized \"%s\"", active_device.c_str());
 
-		INFO_LOG(AUDIO, "ALSA: Successfully initialized \"%s\"", device.c_str());
-
-		/* Allocate a hardware parameters object. */
 		snd_pcm_hw_params_alloca(&params);
 
-		/* Fill it in with default values. */
-		rc=snd_pcm_hw_params_any(handle, params);
+		rc = snd_pcm_hw_params_any(handle, params);
 		if (rc < 0)
 		{
 			ERROR_LOG(AUDIO, "ALSA: Error:snd_pcm_hw_params_any %s", snd_strerror(rc));
@@ -87,10 +73,13 @@ public:
 			return false;
 		}
 
-		/* Set the desired hardware parameters. */
+		rc = snd_pcm_hw_params_set_rate_resample(handle, params, 0);
+		if (rc < 0)
+		{
+			WARN_LOG(AUDIO, "ALSA: Unable to disable resampling: %s", snd_strerror(rc));
+		}
 
-		/* Interleaved mode */
-		rc=snd_pcm_hw_params_set_access(handle, params, SND_PCM_ACCESS_RW_INTERLEAVED);
+		rc = snd_pcm_hw_params_set_access(handle, params, SND_PCM_ACCESS_RW_INTERLEAVED);
 		if (rc < 0)
 		{
 			ERROR_LOG(AUDIO, "ALSA: Error:snd_pcm_hw_params_set_access %s", snd_strerror(rc));
@@ -98,8 +87,7 @@ public:
 			return false;
 		}
 
-		/* Signed 16-bit little-endian format */
-		rc=snd_pcm_hw_params_set_format(handle, params, SND_PCM_FORMAT_S16_LE);
+		rc = snd_pcm_hw_params_set_format(handle, params, SND_PCM_FORMAT_S16_LE);
 		if (rc < 0)
 		{
 			ERROR_LOG(AUDIO, "ALSA: Error:snd_pcm_hw_params_set_format %s", snd_strerror(rc));
@@ -107,8 +95,7 @@ public:
 			return false;
 		}
 
-		/* Two channels (stereo) */
-		rc=snd_pcm_hw_params_set_channels(handle, params, 2);
+		rc = snd_pcm_hw_params_set_channels(handle, params, 2);
 		if (rc < 0)
 		{
 			ERROR_LOG(AUDIO, "ALSA: Error:snd_pcm_hw_params_set_channels %s", snd_strerror(rc));
@@ -116,7 +103,6 @@ public:
 			return false;
 		}
 
-		// 44100 samples/second
 		rc = snd_pcm_hw_params_set_rate(handle, params, 44100, 0);
 		if (rc < 0)
 		{
@@ -125,8 +111,9 @@ public:
 			return false;
 		}
 
-		// Period size (512)
-		period_size = std::min(SAMPLE_COUNT, (u32)config::AudioBufferSize / 4);
+		period_size = std::min<snd_pcm_uframes_t>(SAMPLE_COUNT, static_cast<snd_pcm_uframes_t>(config::AudioBufferSize) / 4);
+		if (period_size == 0)
+			period_size = 64;
 		rc = snd_pcm_hw_params_set_period_size_near(handle, params, &period_size, nullptr);
 		if (rc < 0)
 		{
@@ -134,10 +121,9 @@ public:
 			term();
 			return false;
 		}
-		INFO_LOG(AUDIO, "ALSA: period size set to %zd", (size_t)period_size);
+		INFO_LOG(AUDIO, "ALSA: period size set to %zu", static_cast<size_t>(period_size));
 
-		// Sample buffer size
-		buffer_size = config::AudioBufferSize;
+		buffer_size = static_cast<snd_pcm_uframes_t>(config::AudioBufferSize);
 		rc = snd_pcm_hw_params_set_buffer_size_near(handle, params, &buffer_size);
 		if (rc < 0)
 		{
@@ -145,9 +131,8 @@ public:
 			term();
 			return false;
 		}
-		INFO_LOG(AUDIO, "ALSA: buffer size set to %ld", buffer_size);
+		INFO_LOG(AUDIO, "ALSA: buffer size set to %lu", static_cast<unsigned long>(buffer_size));
 
-		/* Write the parameters to the driver */
 		rc = snd_pcm_hw_params(handle, params);
 		if (rc < 0)
 		{
@@ -156,6 +141,7 @@ public:
 			return false;
 		}
 
+		pcm_blocking = true;
 		return true;
 	}
 
@@ -167,11 +153,12 @@ public:
 			ERROR_LOG(AUDIO, "ALSA: Cannot open default audio capture device: %s", snd_strerror(err));
 			return false;
 		}
-		snd_pcm_hw_params_t *hw_params;
+		snd_pcm_hw_params_t *hw_params = nullptr;
 		if ((err = snd_pcm_hw_params_malloc(&hw_params)) < 0)
 		{
 			ERROR_LOG(AUDIO, "ALSA: Cannot allocate hardware parameter structure: %s", snd_strerror(err));
 			snd_pcm_close(handle_record);
+			handle_record = nullptr;
 			return false;
 		}
 		if ((err = snd_pcm_hw_params_any(handle_record, hw_params)) < 0)
@@ -179,13 +166,15 @@ public:
 			ERROR_LOG(AUDIO, "ALSA: Cannot initialize hardware parameter structure: %s", snd_strerror(err));
 			snd_pcm_hw_params_free(hw_params);
 			snd_pcm_close(handle_record);
+			handle_record = nullptr;
 			return false;
 		}
 		if ((err = snd_pcm_hw_params_set_access(handle_record, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0)
 		{
-			ERROR_LOG(AUDIO, "ALSA: Cannot set access type: %s\n", snd_strerror(err));
+			ERROR_LOG(AUDIO, "ALSA: Cannot set access type: %s", snd_strerror(err));
 			snd_pcm_hw_params_free(hw_params);
 			snd_pcm_close(handle_record);
+			handle_record = nullptr;
 			return false;
 		}
 		if ((err = snd_pcm_hw_params_set_format(handle_record, hw_params, SND_PCM_FORMAT_S16_LE)) < 0)
@@ -193,13 +182,15 @@ public:
 			ERROR_LOG(AUDIO, "ALSA: Cannot set sample format: %s", snd_strerror(err));
 			snd_pcm_hw_params_free(hw_params);
 			snd_pcm_close(handle_record);
+			handle_record = nullptr;
 			return false;
 		}
 		if ((err = snd_pcm_hw_params_set_rate(handle_record, hw_params, sampling_freq, 0)) < 0)
 		{
-			ERROR_LOG(AUDIO, "ALSA: Cannot set sample rate to %d Hz: %s", sampling_freq, snd_strerror(err));
+			ERROR_LOG(AUDIO, "ALSA: Cannot set sample rate to %u Hz: %s", sampling_freq, snd_strerror(err));
 			snd_pcm_hw_params_free(hw_params);
 			snd_pcm_close(handle_record);
+			handle_record = nullptr;
 			return false;
 		}
 		if ((err = snd_pcm_hw_params_set_channels(handle_record, hw_params, 1)) < 0)
@@ -207,6 +198,7 @@ public:
 			ERROR_LOG(AUDIO, "ALSA: Cannot set channel count: %s", snd_strerror(err));
 			snd_pcm_hw_params_free(hw_params);
 			snd_pcm_close(handle_record);
+			handle_record = nullptr;
 			return false;
 		}
 		if ((err = snd_pcm_hw_params(handle_record, hw_params)) < 0)
@@ -214,6 +206,7 @@ public:
 			ERROR_LOG(AUDIO, "ALSA: Cannot set parameters: %s", snd_strerror(err));
 			snd_pcm_hw_params_free(hw_params);
 			snd_pcm_close(handle_record);
+			handle_record = nullptr;
 			return false;
 		}
 		snd_pcm_hw_params_free(hw_params);
@@ -222,55 +215,71 @@ public:
 		{
 			ERROR_LOG(AUDIO, "ALSA: Cannot prepare device: %s", snd_strerror(err));
 			snd_pcm_close(handle_record);
+			handle_record = nullptr;
 			return false;
 		}
 		INFO_LOG(AUDIO, "ALSA: Successfully initialized capture device");
-
 		return true;
 	}
 
 	void termRecord() override
 	{
-		snd_pcm_close(handle_record);
+		if (handle_record)
+		{
+			snd_pcm_close(handle_record);
+			handle_record = nullptr;
+		}
 	}
 
-	u32 record(void* frame, u32 samples) override
+	u32 record(void *frame, u32 samples) override
 	{
-		int err = snd_pcm_readi(handle_record, frame, samples);
-		if (err < (int)samples)
+		if (!handle_record)
+			return 0;
+		snd_pcm_sframes_t err = snd_pcm_readi(handle_record, frame, samples);
+		if (err < static_cast<snd_pcm_sframes_t>(samples))
 		{
+			snd_pcm_uframes_t valid = 0;
 			if (err < 0)
 			{
-				DEBUG_LOG(AUDIO, "ALSA: Recording error: %s", snd_strerror(err));
-				err = 0;
-				err = snd_pcm_prepare(handle_record);
+				DEBUG_LOG(AUDIO, "ALSA: Recording error: %s", snd_strerror(static_cast<int>(err)));
+				snd_pcm_prepare(handle_record);
 			}
-			u8 *buffer = (u8 *)frame + err;
-			memset(buffer, 0, (samples - err) * 2);
+			else
+			{
+				valid = static_cast<snd_pcm_uframes_t>(err);
+			}
+			u8 *buffer = static_cast<u8 *>(frame) + (valid * 2);
+			std::memset(buffer, 0, (samples - valid) * 2);
+			return static_cast<u32>(valid);
 		}
-
-		return err;
+		return samples;
 	}
 
-	u32 push(const void* frame, u32 samples, bool wait) override
+	u32 push(const void *frame, u32 samples, bool wait) override
 	{
-		if (wait != pcm_blocking) {
+		if (!handle)
+			return 0;
+
+		if (wait != pcm_blocking)
+		{
 			snd_pcm_nonblock(handle, wait ? 0 : 1);
 			pcm_blocking = wait;
 		}
 
-		int rc = snd_pcm_writei(handle, frame, samples);
+		snd_pcm_sframes_t rc = snd_pcm_writei(handle, frame, samples);
 		if (rc < 0)
 		{
-			snd_pcm_recover(handle, rc, 1);
-			if (rc == -EPIPE)
+			rc = snd_pcm_recover(handle, static_cast<int>(rc), 1);
+			if (rc < 0 && snd_pcm_state(handle) == SND_PCM_STATE_XRUN)
 			{
-				// EPIPE means underrun
-				// Write some silence then our samples
-				const size_t silence_size = buffer_size - samples;
-				void *silence = alloca(silence_size * 4);
-				memset(silence, 0, silence_size * 4);
-				snd_pcm_writei(handle, silence, silence_size);
+				snd_pcm_prepare(handle);
+				snd_pcm_uframes_t remaining = (buffer_size > samples) ? (buffer_size - samples) : 0;
+				while (remaining > 0)
+				{
+					const snd_pcm_uframes_t chunk = std::min<snd_pcm_uframes_t>(remaining, kSilenceChunkFrames);
+					snd_pcm_writei(handle, kZeroStereoFrames.data(), chunk);
+					remaining -= chunk;
+				}
 				snd_pcm_writei(handle, frame, samples);
 			}
 		}
@@ -279,77 +288,47 @@ public:
 
 	void term() override
 	{
-		snd_pcm_drop(handle);
-		snd_pcm_close(handle);
+		if (handle)
+		{
+			snd_pcm_drop(handle);
+			snd_pcm_close(handle);
+			handle = nullptr;
+		}
 	}
 
 	std::vector<std::string> getDeviceList()
 	{
 		std::vector<std::string> result;
-
-		char **hints;
-		int err = snd_device_name_hint(-1, "pcm", (void***)&hints);
-
-		// Error initializing ALSA
-		if (err != 0)
+		char **hints = nullptr;
+		int err = snd_device_name_hint(-1, "pcm", reinterpret_cast<void ***>(&hints));
+		if (err != 0 || hints == nullptr)
 			return result;
 
-		// special value to automatically detect on initialization
 		result.emplace_back("auto");
-
-		char** n = hints;
-		while (*n != NULL)
+		for (char **n = hints; *n != nullptr; ++n)
 		{
-			// Get the type (NULL/Input/Output)
 			char *type = snd_device_name_get_hint(*n, "IOID");
 			char *name = snd_device_name_get_hint(*n, "NAME");
 
-			if (name != NULL)
-			{
-				// We only want output or special devices (like "default" or "pulse")
-				// TODO Only those with type == NULL?
-				if (type == NULL || strcmp(type, "Output") == 0)
-				{
-					// TODO Check if device works (however we need to hash the resulting list then)
-					/*snd_pcm_t *handle;
-					int rc = snd_pcm_open(&handle, name, SND_PCM_STREAM_PLAYBACK, 0);
+			if (name != nullptr && (type == nullptr || std::strcmp(type, "Output") == 0))
+				result.emplace_back(name);
 
-					if (rc == 0)
-					{
-						result.push_back(name);
-						snd_pcm_close(handle);
-					}
-					*/
-
-					result.emplace_back(name);
-				}
-
-			}
-
-			if (type != NULL)
-				free(type);
-
-			if (name != NULL)
-				free(name);
-
-			n++;
+			std::free(type);
+			std::free(name);
 		}
 
-		snd_device_name_free_hint((void**)hints);
-
+		snd_device_name_free_hint(reinterpret_cast<void **>(hints));
 		return result;
 	}
 
-	Option* getOptions(int *count) override
+	Option *getOptions(int *count) override
 	{
 		*count = 1;
 		static Option result;
-
 		result.name = "device";
 		result.caption = "Device";
 		result.type = Option::list;
 		result.values = getDeviceList();
-
 		return &result;
 	}
 };
