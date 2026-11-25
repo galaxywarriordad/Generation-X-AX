@@ -1330,14 +1330,3 @@ void YM2151::stream_update()
         advance();
     }
 }
-```[cite: 26]
-
-### Verification for This Step
-* **Build check:** Paste into `engines/cannonball/src/main/hwaudio/ym2151.cpp` in your GitHub browser editor and run your CMake/Ninja or GitHub Actions build; verify there are zero compiler warnings or errors on `ym2151.cpp`[cite: 26].
-* **Audio check:** Run CannonBall and verify OutRun FM music and sound effects play cleanly with stereo panning intact.
-
-<ElicitationsGroup message="What would you like to tackle next in your browser?">
-  <Elicitation label="Update multivoc.cpp next" query="Yes, give me the browser-ready update for multivoc.cpp next."/>
-  <Elicitation label="Check cannonball-ax.mk" query="Let's review cannonball-ax.mk next for Piccolo-AX packaging."/>
-  <Elicitation label="Check GNUmakefile" query="Let's check engines/eduke32/GNUmakefile for AX_RETRO_BRIDGE_LIB and flags."/>
-</ElicitationsGroup>
