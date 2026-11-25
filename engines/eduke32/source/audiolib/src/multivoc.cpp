@@ -51,7 +51,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 int MV_XMPInterpolation = XMP_INTERP_NEAREST;
 #endif
 
-
 static void MV_StopVoice(VoiceNode *voice, bool useCallBack = true);
 static void MV_ServiceVoc(void);
 
@@ -137,15 +136,12 @@ static bool MV_Mix(VoiceNode * const voice, int const buffer)
 
     MV_MixDestination = MV_MixBuffer[buffer];
 
-    // Add this voice to the mix
     do
     {
         int            mixlen   = length;
         uint32_t const position = voice->position;
         uint32_t const voclen   = voice->length;
 
-        // Check if the last sample in this buffer would be
-        // beyond the length of the sample block
         if ((position + bufsiz) >= voclen)
         {
             if (position >= voclen - voice->channels)
@@ -167,14 +163,12 @@ static bool MV_Mix(VoiceNode * const voice, int const buffer)
 
         if (voice->position >= voclen - voice->channels)
         {
-            // Get the next block of sound
             if (voice->GetSound(voice) != KeepPlaying)
             {
                 MV_GlobalVolume = gv;
                 return false;
             }
 
-            // Get the position of the last sample in the buffer
             if (length > (voice->channels - 1))
                 bufsiz = voice->RateScale * (length - voice->channels);
         }
@@ -224,7 +218,6 @@ static void MV_CleanupVoice(VoiceNode* voice, bool useCallBack = true)
         case FMT_XMP:    MV_ReleaseXMPVoice(voice); break;
 #endif
         default:
-            // these are in the default case of this switch instead of down below because the functions above only zero them if MV_LazyAlloc is false
             voice->rawdataptr = nullptr;
             voice->rawdatasiz = 0;
             break;
@@ -235,23 +228,17 @@ void MV_StopVoice(VoiceNode *voice, bool useCallBack)
 {
     MV_CleanupVoice(voice, useCallBack);
     MV_Lock();
-    // move the voice from the play list to the free list
     MV_FreeHandle(voice);
     MV_Unlock();
 }
 
-/*---------------------------------------------------------------------
-   JBF: no synchronisation happens inside MV_ServiceVoc nor the
-        supporting functions it calls. This would cause a deadlock
-        between the mixer thread in the driver vs the nested
-        locking in the user-space functions of MultiVoc. The call
-        to MV_ServiceVoc is synchronised in the driver.
----------------------------------------------------------------------*/
 static void MV_ServiceVoc(void)
 {
-    // Toggle which buffer we'll mix next
+    if (MV_NumberOfBuffers <= 0)
+        return;
+
     ++MV_MixPage;
-    MV_MixPage &= MV_NumberOfBuffers-1;
+    MV_MixPage &= (MV_NumberOfBuffers - 1);
 
     if (MV_ReverbLevel == 0)
     {
@@ -278,7 +265,6 @@ static void MV_ServiceVoc(void)
 
             MV_Reverb<int16_t>(source, dest, MV_ReverbVolume, count >> 1);
 
-            // if we go through the loop again, it means that we've wrapped around the buffer
             source  = MV_MixBuffer[0];
             dest   += count;
             length -= count;
@@ -305,9 +291,8 @@ static void MV_ServiceVoc(void)
                 continue;
             }
 
-            MV_BufferEmpty[ MV_MixPage ] = FALSE;
+            MV_BufferEmpty[MV_MixPage] = FALSE;
 
-            // Is this voice done?
             if (!MV_Mix(voice, MV_MixPage))
             {
                 MV_CleanupVoice(voice);
@@ -317,15 +302,19 @@ static void MV_ServiceVoc(void)
         while ((voice = next) != &VoiceList);
     }
 
-    Bmemcpy(MV_MixBuffer[MV_MixPage+MV_NumberOfBuffers], MV_MixBuffer[MV_MixPage], MV_BufferSize);
+    Bmemcpy(MV_MixBuffer[MV_MixPage + MV_NumberOfBuffers], MV_MixBuffer[MV_MixPage], MV_BufferSize);
 
     if (MV_MusicCallback)
     {
         MV_MusicCallback();
-        int16_t * __restrict source = (int16_t*)MV_MusicBuffer;
-        int16_t * __restrict dest = (int16_t*)MV_MixBuffer[MV_MixPage+MV_NumberOfBuffers];
-        for (int32_t i = 0; i < MV_BufferSize>>1; i++, dest++)
-            *dest = clamp(*dest + *source++,INT16_MIN, INT16_MAX);
+        int16_t const * __restrict source = reinterpret_cast<int16_t const *>(MV_MusicBuffer);
+        int16_t *       __restrict dest   = reinterpret_cast<int16_t *>(MV_MixBuffer[MV_MixPage + MV_NumberOfBuffers]);
+        int32_t const count = MV_BufferSize >> 1;
+        for (int32_t i = 0; i < count; i++, dest++, source++)
+        {
+            int32_t const mixed = static_cast<int32_t>(*dest) + static_cast<int32_t>(*source);
+            *dest = static_cast<int16_t>(clamp<int32_t>(mixed, INT16_MIN, INT16_MAX));
+        }
     }
 
     if (MusicVoice && !MV_Mix(MusicVoice, MV_MixPage + MV_NumberOfBuffers))
@@ -395,7 +384,6 @@ int MV_KillAllVoices(bool useCallBack)
 
     auto voice = VoiceList.prev;
 
-    // Remove all the voices from the list
     while (voice != &VoiceList)
     {
         if (voice->priority == MV_MUSIC_PRIORITY)
@@ -447,7 +435,6 @@ static inline VoiceNode *MV_GetLowestPriorityVoice(void)
 {
     auto voice = VoiceList.next;
 
-    // find the voice with the lowest priority and volume
     for (auto node = voice; node != &VoiceList; node = node->next)
     {
         if (node->priority < voice->priority
@@ -460,11 +447,11 @@ static inline VoiceNode *MV_GetLowestPriorityVoice(void)
 
 static inline void MV_FinishAllocation(VoiceNode* voice, uint32_t const allocsize)
 {
-    if (voice->rawdataptr != nullptr && voice->rawdatasiz == allocsize)
+    if (voice->rawdataptr != nullptr && voice->rawdatasiz >= allocsize)
         return;
-    else if (voice->rawdataptr != nullptr && voice->wavetype >= FMT_VORBIS)
+
+    if (voice->rawdataptr != nullptr && voice->wavetype >= FMT_VORBIS)
     {
-        // this is sort of a hack... wavetypes less than FMT_VORBIS never do their own allocations, so don't bother trying to free them
         ALIGNED_FREE_AND_NULL(voice->rawdataptr);
     }
 
@@ -477,7 +464,6 @@ VoiceNode *MV_AllocVoice(int priority, uint32_t allocsize /* = 0 */)
 {
     MV_Lock();
 
-    // Check if we have any free voices
     if (LL::Empty(&VoicePool))
     {
         auto voice = MV_GetLowestPriorityVoice();
@@ -487,7 +473,6 @@ VoiceNode *MV_AllocVoice(int priority, uint32_t allocsize /* = 0 */)
 
         if (LL::Empty(&VoicePool))
         {
-            // No free voices
             MV_Unlock();
             return nullptr;
         }
@@ -498,7 +483,6 @@ VoiceNode *MV_AllocVoice(int priority, uint32_t allocsize /* = 0 */)
 
     int handle = MV_MINVOICEHANDLE;
 
-    // Find a free voice handle
     do
     {
         if (++handle > MV_MaxVoices)
@@ -520,7 +504,6 @@ VoiceNode *MV_AllocVoice(int priority, uint32_t allocsize /* = 0 */)
 
 int MV_VoiceAvailable(int priority)
 {
-    // Check if we have any free voices
     if (!LL::Empty(&VoicePool))
         return TRUE;
 
@@ -537,7 +520,6 @@ void MV_SetVoicePitch(VoiceNode *voice, uint32_t rate, int pitchoffset)
     voice->PitchScale   = PITCH_GetScale(pitchoffset);
     voice->RateScale    = divideu64((uint64_t)rate * voice->PitchScale, MV_MixRate);
 
-    // Multiply by MV_MIXBUFFERSIZE - 1
     voice->FixedPointBufferSize = (voice->RateScale * MV_MIXBUFFERSIZE) -
                                   voice->RateScale;
 }
@@ -584,34 +566,12 @@ int MV_GetFrequency(int handle, int *frequency)
     return MV_Ok;
 }
 
-/*---------------------------------------------------------------------
-   Function: MV_SetVoiceMixMode
-
-   Selects which method should be used to mix the voice.
-
-   16Bit        16Bit |  8Bit  16Bit  8Bit  16Bit |
-   Mono         Ster  |  Mono  Mono   Ster  Ster  |  Mixer
-   Out          Out   |  In    In     In    In    |
-----------------------+---------------------------+-------------
-    X                 |         X                 | MixMono<int16_t, int16_t>
-    X                 |   X                       | MixMono<uint8_t, int16_t>
-                 X    |         X                 | MixStereo<int16_t, int16_t>
-                 X    |   X                       | MixStereo<uint8_t, int16_t>
-----------------------+---------------------------+-------------
-                 X    |                      X    | MixStereoStereo<int16_t, int16_t>
-                 X    |                X          | MixStereoStereo<uint8_t, int16_t>
-    X                 |                      X    | MixMonoStereo<int16_t, int16_t>
-    X                 |                X          | MixMonoStereo<uint8_t, int16_t>
----------------------------------------------------------------------*/
-
 void MV_SetVoiceMixMode(VoiceNode *voice)
 {
-    // stereo look-up table
     static constexpr decltype(voice->mix) mixslut[]
     = { MV_MixStereo<uint8_t, int16_t>,       MV_MixMono<uint8_t, int16_t>,       MV_MixStereo<int16_t, int16_t>,       MV_MixMono<int16_t, int16_t>,
         MV_MixStereoStereo<uint8_t, int16_t>, MV_MixMonoStereo<uint8_t, int16_t>, MV_MixStereoStereo<int16_t, int16_t>, MV_MixMonoStereo<int16_t, int16_t> };
 
-    // corresponds to T_MONO, T_16BITSOURCE, and T_STEREOSOURCE
     voice->mix = mixslut[(MV_Channels == 1) | ((voice->bits == 16) << 1) | ((voice->channels == 2) << 2)];
 }
 
@@ -774,7 +734,6 @@ static int MV_SetMixMode(int numchannels)
 
 static int MV_StartPlayback(void)
 {
-    // Initialize the buffers
     Bmemset(MV_MixBuffer[0], 0, MV_TOTALBUFFERSIZE << 1);
 
     for (int buffer = 0; buffer < MV_NumberOfBuffers; buffer++)
@@ -792,7 +751,6 @@ static void MV_StopPlayback(void)
 {
     SoundDriver_PCM_StopPlayback();
 
-    // Make sure all callbacks are done.
     MV_Lock();
 
     for (VoiceNode *voice = VoiceList.next, *next; voice != &VoiceList; voice = next)
@@ -873,15 +831,12 @@ int MV_Init(int soundcard, int MixRate, int Voices, int numchannels, void *initd
 
     ASS_PCMSoundDriver = soundcard;
 
-    // Initialize the sound card
-
     if (SoundDriver_PCM_Init(&MixRate, &numchannels, initdata) != MV_Ok)
         MV_SetErrorCode(MV_DriverError);
 
     if (MV_ErrorCode != MV_Ok)
     {
         ALIGNED_FREE_AND_NULL(MV_Voices);
-
         return MV_Error;
     }
 
@@ -891,14 +846,11 @@ int MV_Init(int soundcard, int MixRate, int Voices, int numchannels, void *initd
     MV_ReverbLevel  = 0;
     MV_ReverbVolume = 0.f;
 
-    // Set the sampling rate
     MV_MixRate = MixRate;
 
-    // Set Mixer to play stereo digitized sound
     MV_SetMixMode(numchannels);
     MV_ReverbDelay = MV_BufferSize * 3;
 
-    // Make sure we don't cross a physical page
     MV_MixBuffer[MV_NumberOfBuffers<<1] = ptr;
     for (int buffer = 0; buffer < MV_NumberOfBuffers<<1; buffer++)
     {
@@ -908,15 +860,12 @@ int MV_Init(int soundcard, int MixRate, int Voices, int numchannels, void *initd
 
     MV_MusicBuffer = ptr;
 
-    // Calculate pan table
     MV_CalcPanTable();
 
     MV_VolumeSmoothFactor = fix16_from_float(1.f-powf(0.1f, 30.f/MixRate));
 
-    // Start the playback engine
     if (MV_StartPlayback() != MV_Ok)
     {
-        // Preserve error code while we shutdown.
         int status = MV_ErrorCode;
         MV_Shutdown();
         return MV_SetErrorCode(status);
@@ -934,13 +883,9 @@ int MV_Shutdown(void)
 
     MV_Installed = FALSE;
 
-    // Stop the sound playback engine
     MV_StopPlayback();
-
-    // Shutdown the sound card
     SoundDriver_PCM_Shutdown();
 
-    // Free any voices we allocated
     ALIGNED_FREE_AND_NULL(MV_Voices);
 
     LL::Reset((VoiceNode*) &VoiceList);
@@ -950,7 +895,6 @@ int MV_Shutdown(void)
 
     MV_MaxVoices = 1;
 
-    // Release the descriptor from our mix buffer
     for (int buffer = 0; buffer < MV_NUMBEROFBUFFERS<<1; buffer++)
         MV_MixBuffer[buffer] = nullptr;
 
@@ -1042,12 +986,10 @@ int MV_StartDemandFeedPlayback(void (*function)(const char** ptr, uint32_t* leng
     if (!MV_Installed)
         return MV_SetErrorCode(MV_NotInstalled);
 
-    // Request a voice from the voice pool
     auto voice = MV_AllocVoice(priority);
     if (voice == nullptr)
         return MV_SetErrorCode(MV_NoVoices);
 
-//    voice->wavetype = FMT_DEMANDFED;
     voice->bits = bitdepth;
     voice->channels = channels;
     voice->GetSound = MV_GetNextDemandFeedBlock;
@@ -1083,9 +1025,8 @@ int MV_StartDemandFeedPlayback3D(void (*function)(const char** ptr, uint32_t* le
 
     int const vol = MIX_VOLUME(distance);
 
-    // Ensure angle is within 0 - 127
     angle &= MV_MAXPANPOSITION;
 
     return MV_StartDemandFeedPlayback(function, bitdepth, channels, rate, pitchoffset, max(0, 255 - distance),
-        MV_PanTable[ angle ][ vol ].left, MV_PanTable[ angle ][ vol ].right, priority, volume, callbackval, userdata);
+        MV_PanTable[angle][vol].left, MV_PanTable[angle][vol].right, priority, volume, callbackval, userdata);
 }
