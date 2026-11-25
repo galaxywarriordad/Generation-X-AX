@@ -40,7 +40,7 @@ static int ErrorCode;
 static int Initialised;
 static int Playing;
 
-static char *  MixBuffer;
+static char *MixBuffer;
 static int MixBufferSize;
 static int MixBufferCount;
 static int MixBufferCurrent;
@@ -57,7 +57,7 @@ static mutex_t mutex;
 
 static DSBPOSITIONNOTIFY notifyPositions[MIXBUFFERPOSITIONS + 1] = {};
 
-static void FillBufferPosition(char * ptr, int remaining)
+static void FillBufferPosition(char *ptr, int remaining)
 {
     int len = 0;
 
@@ -115,7 +115,6 @@ static void FillBuffer(int bufnum)
             }
 fail:
             LOG_F(ERROR, "Unable to lock DirectSound buffer: IDirectSoundBuffer_Lock error %x", (uint32_t)err);
-
             return;
         }
         break;
@@ -137,7 +136,7 @@ static unsigned WINAPI fillDataThread(LPVOID lpParameter)
 
     debugThreadName("DSound_fillData");
 
-    HANDLE handles[MIXBUFFERPOSITIONS+1];
+    HANDLE handles[MIXBUFFERPOSITIONS + 1];
 
     for (int i = 0; i < ARRAY_SSIZE(handles); i++)
         handles[i] = notifyPositions[i].hEventNotify;
@@ -146,12 +145,11 @@ static unsigned WINAPI fillDataThread(LPVOID lpParameter)
     {
         DWORD const waitret = WaitForMultipleObjects(MIXBUFFERPOSITIONS, handles, FALSE, INFINITE);
 
-        if (waitret >= WAIT_OBJECT_0 && waitret < WAIT_OBJECT_0+MIXBUFFERPOSITIONS)
+        if (waitret >= WAIT_OBJECT_0 && waitret < WAIT_OBJECT_0 + MIXBUFFERPOSITIONS)
         {
             mutex_lock(&mutex);
             FillBuffer((waitret + MIXBUFFERPOSITIONS - 1 - WAIT_OBJECT_0) % MIXBUFFERPOSITIONS);
             mutex_unlock(&mutex);
-            SwitchToThread(); // this signals the OS to context switch
         }
         else
         {
@@ -212,7 +210,7 @@ static int DirectSound_Error(HRESULT err, int code)
     return DSErr_Error;
 }
 
-int DirectSoundDrv_PCM_Init(int *mixrate, int *numchannels, void * initdata)
+int DirectSoundDrv_PCM_Init(int *mixrate, int *numchannels, void *initdata)
 {
     HRESULT err;
     DSBUFFERDESC bufdesc = {};
@@ -224,7 +222,7 @@ int DirectSoundDrv_PCM_Init(int *mixrate, int *numchannels, void * initdata)
     if (FAILED(err = DirectSoundCreate(0, &lpds, 0)))
         return DirectSound_Error(err, DSErr_DirectSoundCreate);
 
-    if (FAILED(err = IDirectSound_SetCooperativeLevel(lpds, (HWND) initdata, DSSCL_PRIORITY)))
+    if (FAILED(err = IDirectSound_SetCooperativeLevel(lpds, (HWND)initdata, DSSCL_PRIORITY)))
         return DirectSound_Error(err, DSErr_SetCooperativeLevel);
 
     bufdesc.dwSize = sizeof(DSBUFFERDESC);
@@ -244,7 +242,6 @@ int DirectSoundDrv_PCM_Init(int *mixrate, int *numchannels, void * initdata)
         return DirectSound_Error(err, DSErr_SetFormat);
 
     bufdesc.dwFlags = DSBCAPS_LOCSOFTWARE | DSBCAPS_CTRLPOSITIONNOTIFY | DSBCAPS_GETCURRENTPOSITION2 | DSBCAPS_STICKYFOCUS;
-
     bufdesc.dwBufferBytes = wfex.nBlockAlign * 2048 * 2;
     bufdesc.lpwfxFormat = &wfex;
 
@@ -256,7 +253,7 @@ int DirectSoundDrv_PCM_Init(int *mixrate, int *numchannels, void * initdata)
 
     for (int i = 0; i < MIXBUFFERPOSITIONS; i++)
     {
-        notifyPositions[i].dwOffset = (bufdesc.dwBufferBytes/MIXBUFFERPOSITIONS)*i;
+        notifyPositions[i].dwOffset = (bufdesc.dwBufferBytes / MIXBUFFERPOSITIONS) * i;
         notifyPositions[i].hEventNotify = CreateEvent(nullptr, FALSE, FALSE, nullptr);
         if (!notifyPositions[i].hEventNotify)
             return DirectSound_Error(DS_OK, DSErr_NotifyEvents);
@@ -265,16 +262,14 @@ int DirectSoundDrv_PCM_Init(int *mixrate, int *numchannels, void * initdata)
     notifyPositions[MIXBUFFERPOSITIONS].dwOffset = DSBPN_OFFSETSTOP;
     notifyPositions[MIXBUFFERPOSITIONS].hEventNotify = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
-    if (FAILED(err = IDirectSoundNotify_SetNotificationPositions(lpdsnotify, MIXBUFFERPOSITIONS+1, notifyPositions)))
+    if (FAILED(err = IDirectSoundNotify_SetNotificationPositions(lpdsnotify, MIXBUFFERPOSITIONS + 1, notifyPositions)))
         return DirectSound_Error(err, DSErr_SetNotificationPositions);
 
     if (FAILED(err = IDirectSoundBuffer_Play(lpdsbprimary, 0, 0, DSBPLAY_LOOPING)))
         return DirectSound_Error(err, DSErr_Play);
 
     mutex_init(&mutex);
-
     Initialised = 1;
-
     return DSErr_Ok;
 }
 
@@ -285,7 +280,6 @@ void DirectSoundDrv_PCM_Shutdown(void)
 
     DirectSoundDrv_PCM_StopPlayback();
     TeardownDSound(DS_OK);
-
     Initialised = 0;
 }
 
@@ -306,7 +300,6 @@ int DirectSoundDrv_PCM_BeginPlayback(char *BufferStart, int BufferSize, int NumD
     MixBufferUsed    = 0;
     MixCallBack      = CallBackFunc;
 
-    // prime the buffer
     FillBuffer(0);
 
     if ((mixThread = (HANDLE)_beginthreadex(nullptr, 0, fillDataThread, 0, 0, 0)) == nullptr)
@@ -326,7 +319,6 @@ int DirectSoundDrv_PCM_BeginPlayback(char *BufferStart, int BufferSize, int NumD
     }
 
     Playing = 1;
-
     return DSErr_Ok;
 }
 
