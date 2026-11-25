@@ -480,14 +480,3 @@ int32_t SDL_WaitEventTimeout(SDL_Event *event, int32_t timeout)
         }
     }
 }
-```[cite: 30]
-
-### Verification
-* **Compile check:** Paste the updated `sdlayer12.cpp` in your GitHub browser tab and run your build to confirm zero warnings or errors[cite: 30].
-* **Runtime check:** Verify EDuke32 / VoidSW / EKenBuild windowing, input, and frame pacing behave cleanly on your target build.
-
-<ElicitationsGroup message="What would you like to do next?">
-  <Elicitation label="Full sdlayer.cpp patch" query="Please give me a cleaned-up browser-ready update for sdlayer.cpp too."/>
-  <Elicitation label="Check GitHub Actions build" query="Let's check what to verify in the GitHub Actions build next."/>
-  <Elicitation label="Pick another file" query="Let's review another file in Generation-X-AX or Piccolo-AX."/>
-</ElicitationsGroup>
