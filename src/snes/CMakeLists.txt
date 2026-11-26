@@ -9,7 +9,12 @@ add_library(ax_genx_snes STATIC
 target_include_directories(ax_genx_snes
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
+
+if(TARGET ax_ui_retro)
+    target_link_libraries(ax_genx_snes PUBLIC ax_ui_retro)
+endif()
 
 if(GENX_SNES_ENABLE_ARES_CORE)
     target_compile_definitions(ax_genx_snes PUBLIC GENX_SNES_HAS_ARES_CORE=1)
