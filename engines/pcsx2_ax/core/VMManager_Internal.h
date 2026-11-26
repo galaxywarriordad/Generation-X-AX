@@ -15,7 +15,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <string_view>
 
 struct ArchiveEntryList;
 struct SaveStateScreenshotData;
@@ -43,7 +42,7 @@ void record_telemetry(const pcsx2_ax::core::FrameTelemetrySample& sample,
                                        const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
 
 void set_media_path(std::string path, bool ready, pcsx2_ax::core::VmContext& ctx = active_context());
-[[nodiscard]] const std::string& get_media_path(const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+[[nodiscard]] std::string get_media_path(const pcsx2_ax::core::VmContext& ctx = active_context());
 [[nodiscard]] bool is_media_ready(const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
 
 void set_memcard_busy(bool busy, pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
@@ -74,11 +73,16 @@ extern bool g_target_speed_can_sync_to_host;
 extern bool g_target_speed_synced_to_host;
 extern bool g_use_vsync_for_timing;
 
+namespace Internal {
+void ClearCPUExecutionCaches();
+void ResetVMHotkeyState();
+bool HasBootedELF();
+} // namespace Internal
+
 void LogCPUCapabilities();
 void InitializeCPUProviders();
 void ShutdownCPUProviders();
 void UpdateCPUImplementations();
-
 bool AutoDetectSource(const std::string& filename, Error* error = nullptr);
 void UpdateDiscDetails(bool booting);
 void ClearDiscDetails();
@@ -88,7 +92,6 @@ void ClearELFInfo();
 void ReportGameChangeToHost();
 bool HasBootedELF();
 std::string GetDiscOverrideFromGameSettings(const std::string& elf_path);
-
 void LoadSettings();
 void LoadCoreSettings(SettingsInterface& si);
 void ApplySettings();
@@ -127,7 +130,6 @@ void InitializeDiscordPresence();
 void ShutdownDiscordPresence();
 void UpdateDiscordPresence(bool update_session_time);
 void PollDiscordPresence();
-
 std::string GetSaveStateFileName(const char* game_serial, u32 game_crc, s32 slot, bool backup = false);
 std::string GetSaveStateFileName(const char* filename, s32 slot, bool backup = false);
 bool HasSaveStateInSlot(const char* game_serial, u32 game_crc, s32 slot);
