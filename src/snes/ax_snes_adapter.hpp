@@ -11,9 +11,9 @@
 namespace ax::genx::snes {
 
 enum class AudioFilterMode {
-    Default,      // Bit-accurate pass-through (zero modification)
-    ZsnesWarm,    // 11.5 kHz gentle low-pass roll-off + 8% stereo crossfeed
-    CrtNearfield, // 7.5 kHz -2.5 dB high-shelf tame for nearfield/DAC comfort
+    Default,
+    ZsnesWarm,
+    CrtNearfield,
 };
 
 struct SnesAudioFilterState {
@@ -68,22 +68,18 @@ public:
     bool StartSession();
     bool ShutdownSession();
 
-    // Audio DSP filter control & real-time stereo processing (run on Cores 2-4, never Core 0)
     void ConfigureAudioFilter(AudioFilterMode mode) noexcept;
     void ProcessAudioFilterStereo(float* interleaved_lr, std::size_t frame_count) noexcept;
     AudioFilterMode audio_filter_mode() const noexcept { return extras_.audio_filter_mode; }
 
-    // Rate-guard helper bounded by [-rate_guard_max_ppm, +rate_guard_max_ppm]
     int ComputeRateGuardPpm(int current_ring_fill_pct) const noexcept;
 
-    // Telemetry hook called by RunSnesCoreLoop each frame
     void RecordFrameTelemetry(std::uint64_t frame_index,
                               std::uint32_t last_frametime_us,
                               int ring_fill_pct,
                               int rate_guard_ppm,
                               bool xrun) noexcept;
 
-    // Atomic file persistence (tmp -> fsync -> rename -> parent dir fsync)
     bool WriteFileAtomic(const std::string& target_path, const std::string& content) const;
     bool SaveSnesControlsAtomic(const ax::ui::retro::SnesControllerMap& map,
                                 const std::string& target_path) const;
