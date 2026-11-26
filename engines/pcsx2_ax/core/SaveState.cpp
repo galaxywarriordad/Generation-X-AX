@@ -46,6 +46,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <mutex>
 #include <png.h>
 #include <span>
 #include <string>
@@ -139,76 +140,6 @@ void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter,
                                      pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context())
 {
 	if (auto* adapter = pcsx2_ax::vm_bridge::get_mode_adapter(ctx); adapter != nullptr)
-		return adapter->freeze_state(sw);
-	return true;
-}
-
-[[nodiscard]] bool freeze_pad_state(StateWrapper& sw)
-{
-	// Adapter freeze_state runs once per freeze pass via freeze_sio2_state.
-	(void)sw;
-	return true;
-}
-
-[[nodiscard]] bool commit_file_atomically(const char* final_filename,
-                                          Error* error,
-                                          uint64_t expected_epoch = 0u,
-                                          const pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context())
-{
-	if (final_filename == nullptr || final_filename[0] == '\0')
-		return false;
-
-	std::error_code ec;
-	const std::filesystem::path dest_path(final_filename);
-	const std::filesystem::path tmp_path =
-		dest_path.parent_path() / (dest_path.filename().string() + ".tmp");
-
-	if (!std::filesystem::exists(tmp_path, ec))
-		return true;
-
-	if (expected_epoch != 0u && pcsx2_ax::vm_bridge::current_epoch(ctx) != expected_epoch)
-	{
-		std::filesystem::remove(tmp_path, ec);
-		Error::SetStringFmt(error, "Discarded stale save state '{}' due to epoch change", dest_path.string());
-		return false;
-	}
-
-	if (!sync_file_and_parent(tmp_path))
-	{
-		Error::SetStringFmt(error, "Failed fsync on temporary save state '{}'", tmp_path.string());
-		return false;
-	}
-
-	std::filesystem::rename(tmp_path, dest_path, ec);
-	if (ec)
-	{
-		std::filesystem::remove(tmp_path, ec);
-		Error::SetStringFmt(error, "Atomic rename failed for '{}': {}", dest_path.string(), ec.message());
-		return false;
-	}
-
-	(void)sync_file_and_parent(dest_path);
-	return true;
-}
-
-} // namespace pcsx2_ax::savestate_bridge
-
-void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter) noexcept
-{
-	active_adapter() = adapter;
-	if (adapter != nullptr)
-	{
-		const auto info = adapter->bios_descriptor();
-		active_bios_crc() = info.bios_crc;
-		active_bios_desc() = info.region_code.empty()
-			? ((adapter->mode() == pcsx2_ax::core::HardwareMode::CohHArcade) ? "COH-H" : "PS2")
-			: std::string(info.region_code);
-	}
-}
-
-[[nodiscard]] bool freeze_sio2_state(StateWrapper& sw)
-{
-	if (auto* adapter = active_adapter(); adapter != nullptr)
 		return adapter->freeze_state(sw);
 	return true;
 }
@@ -352,8 +283,8 @@ bool SaveStateBase::FreezeBios()
 	if (!FreezeTag("BIOS"))
 		return false;
 
-	const u32 current_crc = pcsx2_ax::savestate_bridge::active_bios_crc();
-	const std::string& current_desc = pcsx2_ax::savestate_bridge::active_bios_desc();
+	const u32 current_crc = pcsx2_ax::savestate_bridge::resolve_bios_crc();
+	const std::string current_desc = pcsx2_ax::savestate_bridge::resolve_bios_desc();
 
 	u32 bioscheck = current_crc;
 	char biosdesc[256];
