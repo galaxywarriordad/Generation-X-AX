@@ -10,8 +10,10 @@
 #include "common/Threading.h"
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -23,6 +25,9 @@ namespace pcsx2_ax::vm_bridge {
 
 void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter) noexcept;
 [[nodiscard]] pcsx2_ax::core::IHardwareModeAdapter* get_mode_adapter() noexcept;
+[[nodiscard]] uint64_t current_epoch() noexcept;
+[[nodiscard]] uint64_t advance_epoch() noexcept;
+[[nodiscard]] pcsx2_ax::core::ModeEpochSnapshot current_snapshot() noexcept;
 
 void set_media_path(std::string path, bool ready);
 [[nodiscard]] const std::string& get_media_path() noexcept;
