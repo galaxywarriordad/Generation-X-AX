@@ -1,16 +1,21 @@
-// SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
+// SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team & The Silicon Preservation Society
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "CDVDdiscReader.h"
 #include "CDVD/CDVD.h"
 #include "Host.h"
 #include "common/Console.h"
-
 #include "common/Error.h"
 
 #include "fmt/format.h"
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <thread>
 
@@ -21,34 +26,32 @@ static std::condition_variable s_keepalive_cv;
 static std::thread s_keepalive_thread;
 
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 // State Information                                                         //
 
-int curDiskType;
-int curTrayStatus;
+int curDiskType = CDVD_TYPE_NODISC;
+int curTrayStatus = CDVD_TRAY_OPEN;
 
-static u32 csector;
-int cmode;
+static u32 csector = 0u;
+int cmode = CDVD_MODE_2048;
 
 static int lastReadInNewDiskCB = 0;
 static u8 directReadSectorBuffer[2448];
 
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 // Utility Functions                                                         //
 
-static u8 dec_to_bcd(u8 dec)
+static u8 dec_to_bcd(u8 dec) noexcept
 {
-	return ((dec / 10) << 4) | (dec % 10);
+	return static_cast<u8>(((dec / 10u) << 4u) | (dec % 10u));
 }
 
-static void lsn_to_msf(u8* minute, u8* second, u8* frame, u32 lsn)
+static void lba_to_bcd_msf(u8* minute, u8* second, u8* frame, u32 lsn) noexcept
 {
-	*frame = dec_to_bcd(lsn % 75);
-	lsn /= 75;
-	*second = dec_to_bcd(lsn % 60);
-	lsn /= 60;
-	*minute = dec_to_bcd(lsn % 100);
+	*frame = dec_to_bcd(static_cast<u8>(lsn % 75u));
+	lsn /= 75u;
+	*second = dec_to_bcd(static_cast<u8>(lsn % 60u));
+	lsn /= 60u;
+	*minute = dec_to_bcd(static_cast<u8>(lsn % 100u));
 }
 
 // TocStuff
@@ -56,7 +59,7 @@ void cdvdParseTOC()
 {
 	tracks.fill(cdvdTrack{});
 
-	if (!src->GetSectorCount())
+	if (!src || !src->GetSectorCount())
 	{
 		curDiskType = CDVD_TYPE_NODISC;
 		strack = 1;
@@ -67,7 +70,6 @@ void cdvdParseTOC()
 	if (src->GetMediaType() >= 0)
 	{
 		tracks[1].type = CDVD_MODE1_TRACK;
-
 		strack = 1;
 		etrack = 1;
 		return;
@@ -76,7 +78,7 @@ void cdvdParseTOC()
 	strack = 0xFF;
 	etrack = 0;
 
-	for (auto& entry : src->ReadTOC())
+	for (const auto& entry : src->ReadTOC())
 	{
 		const u8 track = entry.track;
 		if (track < 1 || track >= tracks.size())
@@ -89,16 +91,11 @@ void cdvdParseTOC()
 		tracks[track].start_lba = entry.lba;
 		if ((entry.control & 0x0C) == 0x04)
 		{
-			std::array<u8, 2352> buffer;
-			// Byte 15 of a raw CD data sector determines the track mode
+			std::array<u8, 2352> buffer{};
 			if (src->ReadSectors2352(entry.lba, 1, buffer.data()) && (buffer[15] & 3) == 2)
-			{
 				tracks[track].type = CDVD_MODE2_TRACK;
-			}
 			else
-			{
 				tracks[track].type = CDVD_MODE1_TRACK;
-			}
 		}
 		else
 		{
@@ -111,10 +108,9 @@ void cdvdParseTOC()
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 // CDVD processing functions                                                 //
 
-std::atomic<bool> s_keepalive_is_open;
+std::atomic<bool> s_keepalive_is_open{false};
 bool disc_has_changed = false;
 bool weAreInNewDiskCB = false;
 
@@ -122,39 +118,37 @@ std::unique_ptr<IOCtlSrc> src;
 
 extern u32 g_last_sector_block_lsn;
 
-///////////////////////////////////////////////////////////////////////////////
-// keepAliveThread throws a read event regularly to prevent drive spin down  //
-
 static void keepAliveThread()
 {
 	u8 throwaway[2352];
 
-	printf(" * CDVD: KeepAlive thread started...\n");
+	std::printf(" * CDVD: KeepAlive thread started...\n");
 	std::unique_lock<std::mutex> guard(s_keepalive_lock);
 
 	while (!s_keepalive_cv.wait_for(guard, std::chrono::seconds(30),
-		[]() { return !s_keepalive_is_open; }))
+		[]() noexcept { return !s_keepalive_is_open.load(std::memory_order_acquire); }))
 	{
+		if (!src)
+			continue;
 
-		//printf(" * keepAliveThread: polling drive.\n");
 		if (src->GetMediaType() >= 0)
-			src->ReadSectors2048(g_last_sector_block_lsn, 1, throwaway);
+			(void)src->ReadSectors2048(g_last_sector_block_lsn, 1, throwaway);
 		else
-			src->ReadSectors2352(g_last_sector_block_lsn, 1, throwaway);
+			(void)src->ReadSectors2352(g_last_sector_block_lsn, 1, throwaway);
 	}
 
-	printf(" * CDVD: KeepAlive thread finished.\n");
+	std::printf(" * CDVD: KeepAlive thread finished.\n");
 }
 
 bool StartKeepAliveThread()
 {
-	if (s_keepalive_is_open == false)
+	if (!s_keepalive_is_open.load(std::memory_order_acquire))
 	{
-		s_keepalive_is_open = true;
+		s_keepalive_is_open.store(true, std::memory_order_release);
 		s_keepalive_thread = std::thread(keepAliveThread);
 	}
 
-	return s_keepalive_is_open;
+	return s_keepalive_is_open.load(std::memory_order_acquire);
 }
 
 void StopKeepAliveThread()
@@ -164,7 +158,7 @@ void StopKeepAliveThread()
 
 	{
 		std::lock_guard<std::mutex> guard(s_keepalive_lock);
-		s_keepalive_is_open = false;
+		s_keepalive_is_open.store(false, std::memory_order_release);
 	}
 	s_keepalive_cv.notify_one();
 	s_keepalive_thread.join();
@@ -172,15 +166,14 @@ void StopKeepAliveThread()
 
 static bool DISCopen(std::string filename, Error* error)
 {
-	std::string drive = filename;
+	std::string drive = std::move(filename);
 	GetValidDrive(drive);
 	if (drive.empty())
 	{
-		Error::SetString(error, fmt::format("Failed to get drive for {}", filename));
+		Error::SetString(error, fmt::format("Failed to get drive for {}", drive));
 		return false;
 	}
 
-	// open device file
 	src = std::make_unique<IOCtlSrc>(std::move(drive));
 	if (!src->Reopen(error))
 	{
@@ -188,7 +181,6 @@ static bool DISCopen(std::string filename, Error* error)
 		return false;
 	}
 
-	//setup threading manager
 	cdvdStartThread();
 	StartKeepAliveThread();
 
@@ -196,7 +188,7 @@ static bool DISCopen(std::string filename, Error* error)
 	return true;
 }
 
-static bool DISCprecache(ProgressCallback* progress, Error* error)
+static bool DISCprecache(ProgressCallback* /*progress*/, Error* error)
 {
 	Error::SetStringView(error, TRANSLATE_SV("CDVD", "Precaching is not supported for discs."));
 	return false;
@@ -206,7 +198,6 @@ static void DISCclose()
 {
 	StopKeepAliveThread();
 	cdvdStopThread();
-	//close device
 	src.reset();
 }
 
@@ -217,63 +208,51 @@ static s32 DISCreadTrack(u32 lsn, int mode)
 
 	if (weAreInNewDiskCB)
 	{
-		int ret = cdvdDirectReadSector(lsn, mode, directReadSectorBuffer);
+		const int ret = cdvdDirectReadSector(lsn, mode, directReadSectorBuffer);
 		if (ret == 0)
 			lastReadInNewDiskCB = 1;
 		return ret;
 	}
 
 	cdvdRequestSector(lsn, mode);
-
 	return 0;
 }
 
 static s32 DISCgetBuffer(u8* dest)
 {
-	// Do nothing for out of bounds disc sector reads. It prevents some games
-	// from hanging (All-Star Baseball 2005, Hello Kitty: Roller Rescue,
-	// Hot Wheels: Beat That! (NTSC), Ratchet & Clank 3 (PAL),
-	// Test Drive: Eve of Destruction, etc.).
-	if (csector >= src->GetSectorCount())
+	if (!src || csector >= src->GetSectorCount())
 		return 0;
 
 	int csize = 2352;
 	switch (cmode)
 	{
-		case CDVD_MODE_2048:
-			csize = 2048;
-			break;
-		case CDVD_MODE_2328:
-			csize = 2328;
-			break;
-		case CDVD_MODE_2340:
-			csize = 2340;
-			break;
+		case CDVD_MODE_2048: csize = 2048; break;
+		case CDVD_MODE_2328: csize = 2328; break;
+		case CDVD_MODE_2340: csize = 2340; break;
+		default: break;
 	}
 
 	if (lastReadInNewDiskCB)
 	{
 		lastReadInNewDiskCB = 0;
-
-		memcpy(dest, directReadSectorBuffer, csize);
+		std::memcpy(dest, directReadSectorBuffer, static_cast<std::size_t>(csize));
 		return 0;
 	}
 
-	memcpy(dest, cdvdGetSector(csector, cmode), csize);
+	if (const u8* sector_ptr = cdvdGetSector(csector, cmode); sector_ptr != nullptr)
+		std::memcpy(dest, sector_ptr, static_cast<std::size_t>(csize));
 
 	return 0;
 }
 
 static s32 DISCreadSubQ(u32 lsn, cdvdSubQ* subq)
 {
-	// the formatted subq command returns:  control/adr, track, index, trk min, trk sec, trk frm, 0x00, abs min, abs sec, abs frm
-
-	if (lsn >= src->GetSectorCount())
+	if (!src || lsn >= src->GetSectorCount())
 		return -1;
 
-	memset(subq, 0, sizeof(cdvdSubQ));
+	std::memset(subq, 0, sizeof(cdvdSubQ));
 
-	lsn_to_msf(&subq->discM, &subq->discS, &subq->discF, lsn + 150);
+	lba_to_bcd_msf(&subq->discM, &subq->discS, &subq->discF, lsn + 150u);
 
 	u8 i = strack;
 	while (i < etrack && lsn >= tracks[i + 1].start_lba)
@@ -281,17 +260,10 @@ static s32 DISCreadSubQ(u32 lsn, cdvdSubQ* subq)
 
 	lsn -= tracks[i].start_lba;
 
-	lsn_to_msf(&subq->trackM, &subq->trackS, &subq->trackF, lsn);
+	lba_to_bcd_msf(&subq->trackM, &subq->trackS, &subq->trackF, lsn);
 
 	subq->ctrl = tracks[i].type;
 
-	// It's important to note that we do _not_ use the current MSF values
-	// from the host's device. We use the MSF values from the lsn.
-	// An easy way to test an implementation is to see if the OSDSYS
-	// CD player can display the correct minute and second values.
-	// From my testing, the IOCTL returns 0 for ctrl. This also breaks
-	// the OSDSYS player. The only "safe" values to receive from the IOCTL
-	// are ADR, trackNum and trackIndex.
 	if (!src->ReadTrackSubQ(subq))
 	{
 		subq->adr = 1;
@@ -313,7 +285,7 @@ static s32 DISCgetTD(u8 Track, cdvdTD* Buffer)
 {
 	if (Track == 0)
 	{
-		if (src == nullptr)
+		if (!src)
 			return -1;
 
 		Buffer->lsn = src->GetSectorCount();
@@ -321,9 +293,7 @@ static s32 DISCgetTD(u8 Track, cdvdTD* Buffer)
 		return 0;
 	}
 
-	if (Track < strack)
-		return -1;
-	if (Track > etrack)
+	if (Track < strack || Track > etrack)
 		return -1;
 
 	Buffer->lsn = tracks[Track].start_lba;
@@ -333,22 +303,23 @@ static s32 DISCgetTD(u8 Track, cdvdTD* Buffer)
 
 static s32 DISCgetTOC(void* toc)
 {
+	if (!src)
+		return -1;
+
 	u8* tocBuff = static_cast<u8*>(toc);
 	if (curDiskType == CDVD_TYPE_NODISC)
 		return -1;
 
 	if (curDiskType == CDVD_TYPE_DETCTDVDS || curDiskType == CDVD_TYPE_DETCTDVDD)
 	{
-		memset(tocBuff, 0, 2048);
+		std::memset(tocBuff, 0, 2048);
 
-		s32 mt = src->GetMediaType();
-
+		const s32 mt = src->GetMediaType();
 		if (mt < 0)
 			return -1;
 
 		if (mt == 0)
-		{ //single layer
-			// Single Layer - Values are fixed.
+		{
 			tocBuff[0] = 0x04;
 			tocBuff[1] = 0x02;
 			tocBuff[2] = 0xF2;
@@ -356,35 +327,29 @@ static s32 DISCgetTOC(void* toc)
 			tocBuff[4] = 0x86;
 			tocBuff[5] = 0x72;
 
-			// These values are fixed on all discs, except position 14 which is the OTP/PTP flags which are 0 in single layer.
 			tocBuff[12] = 0x01;
 			tocBuff[13] = 0x02;
-			tocBuff[14] = 0x01; // Single layer.
+			tocBuff[14] = 0x01;
 			tocBuff[15] = 0x00;
 
-			// Values are fixed.
-			tocBuff[16] = 0x00; // first sector for layer 0
+			tocBuff[16] = 0x00;
 			tocBuff[17] = 0x03;
 			tocBuff[18] = 0x00;
 			tocBuff[19] = 0x00;
 
-			cdvdTD trackInfo;
-
+			cdvdTD trackInfo{};
 			if (DISCgetTD(0, &trackInfo) == -1)
 				trackInfo.lsn = 0;
-			// Max LSN in the TOC is calculated as the blocks + 0x30000, then - 1.
-			// same as layer 1 start.
-			const s32 maxlsn = trackInfo.lsn + (0x30000 - 1);
-			tocBuff[20] = maxlsn >> 24;
-			tocBuff[21] = (maxlsn >> 16) & 0xff;
-			tocBuff[22] = (maxlsn >> 8) & 0xff;
-			tocBuff[23] = (maxlsn >> 0) & 0xff;
+			const s32 maxlsn = static_cast<s32>(trackInfo.lsn) + (0x30000 - 1);
+			tocBuff[20] = static_cast<u8>((maxlsn >> 24) & 0xff);
+			tocBuff[21] = static_cast<u8>((maxlsn >> 16) & 0xff);
+			tocBuff[22] = static_cast<u8>((maxlsn >> 8) & 0xff);
+			tocBuff[23] = static_cast<u8>(maxlsn & 0xff);
 		}
 		else if (mt == 1)
-		{ //PTP
-			const s32 layer1start = src->GetLayerBreakAddress() + 0x30000;
+		{
+			const s32 layer1start = static_cast<s32>(src->GetLayerBreakAddress()) + 0x30000;
 
-			// dual sided
 			tocBuff[0] = 0x24;
 			tocBuff[1] = 0x02;
 			tocBuff[2] = 0xF2;
@@ -392,28 +357,25 @@ static s32 DISCgetTOC(void* toc)
 			tocBuff[4] = 0x41;
 			tocBuff[5] = 0x95;
 
-			// These values are fixed on all discs, except position 14 which is the OTP/PTP flags.
 			tocBuff[12] = 0x01;
 			tocBuff[13] = 0x02;
-			tocBuff[14] = 0x21; // PTP
+			tocBuff[14] = 0x21;
 			tocBuff[15] = 0x10;
 
-			// Values are fixed.
 			tocBuff[16] = 0x00;
 			tocBuff[17] = 0x03;
 			tocBuff[18] = 0x00;
 			tocBuff[19] = 0x00;
 
-			tocBuff[20] = (layer1start >> 24);
-			tocBuff[21] = (layer1start >> 16) & 0xff;
-			tocBuff[22] = (layer1start >> 8) & 0xff;
-			tocBuff[23] = (layer1start >> 0) & 0xff;
+			tocBuff[20] = static_cast<u8>((layer1start >> 24) & 0xff);
+			tocBuff[21] = static_cast<u8>((layer1start >> 16) & 0xff);
+			tocBuff[22] = static_cast<u8>((layer1start >> 8) & 0xff);
+			tocBuff[23] = static_cast<u8>(layer1start & 0xff);
 		}
 		else
-		{ //OTP
-			const s32 layer1start = src->GetLayerBreakAddress() + 0x30000;
+		{
+			const s32 layer1start = static_cast<s32>(src->GetLayerBreakAddress()) + 0x30000;
 
-			// dual sided
 			tocBuff[0] = 0x24;
 			tocBuff[1] = 0x02;
 			tocBuff[2] = 0xF2;
@@ -421,33 +383,28 @@ static s32 DISCgetTOC(void* toc)
 			tocBuff[4] = 0x41;
 			tocBuff[5] = 0x95;
 
-			// These values are fixed on all discs, except position 14 which is the OTP/PTP flags.
 			tocBuff[12] = 0x01;
 			tocBuff[13] = 0x02;
-			tocBuff[14] = 0x31; // OTP
+			tocBuff[14] = 0x31;
 			tocBuff[15] = 0x10;
 
-			// Values are fixed.
 			tocBuff[16] = 0x00;
 			tocBuff[17] = 0x03;
 			tocBuff[18] = 0x00;
 			tocBuff[19] = 0x00;
 
-			tocBuff[24] = (layer1start >> 24);
-			tocBuff[25] = (layer1start >> 16) & 0xff;
-			tocBuff[26] = (layer1start >> 8) & 0xff;
-			tocBuff[27] = (layer1start >> 0) & 0xff;
+			tocBuff[24] = static_cast<u8>((layer1start >> 24) & 0xff);
+			tocBuff[25] = static_cast<u8>((layer1start >> 16) & 0xff);
+			tocBuff[26] = static_cast<u8>((layer1start >> 8) & 0xff);
+			tocBuff[27] = static_cast<u8>(layer1start & 0xff);
 		}
 	}
 	else if (curDiskType == CDVD_TYPE_DETCTCD)
 	{
-		// cd toc
-		// (could be replaced by 1 command that reads the full toc)
-		u8 min, sec, frm, i;
-		s32 err;
-		cdvdTN diskInfo;
-		cdvdTD trackInfo;
-		memset(tocBuff, 0, 1024);
+		u8 min = 0, sec = 0, frm = 0;
+		cdvdTN diskInfo{};
+		cdvdTD trackInfo{};
+		std::memset(tocBuff, 0, 1024);
 		if (DISCgetTN(&diskInfo) == -1)
 		{
 			diskInfo.etrack = 0;
@@ -459,39 +416,35 @@ static s32 DISCgetTOC(void* toc)
 		tocBuff[0] = 0x41;
 		tocBuff[1] = 0x00;
 
-		//Number of FirstTrack
 		tocBuff[2] = 0xA0;
 		tocBuff[7] = dec_to_bcd(diskInfo.strack);
 
-		//Number of LastTrack
 		tocBuff[12] = 0xA1;
 		tocBuff[17] = dec_to_bcd(diskInfo.etrack);
 
-		//DiskLength
-		lba_to_msf(trackInfo.lsn, &min, &sec, &frm);
+		lba_to_msf(static_cast<s32>(trackInfo.lsn), &min, &sec, &frm);
 		tocBuff[22] = 0xA2;
 		tocBuff[27] = dec_to_bcd(min);
 		tocBuff[28] = dec_to_bcd(sec);
 		tocBuff[29] = dec_to_bcd(frm);
 
-		fprintf(stderr, "Track 0: %u mins %u secs %u frames\n", min, sec, frm);
-
-		for (i = diskInfo.strack; i <= diskInfo.etrack; i++)
+		for (u8 i = diskInfo.strack; i <= diskInfo.etrack; ++i)
 		{
-			err = DISCgetTD(i, &trackInfo);
-			lba_to_msf(trackInfo.lsn, &min, &sec, &frm);
+			const s32 err = DISCgetTD(i, &trackInfo);
+			lba_to_msf(static_cast<s32>(trackInfo.lsn), &min, &sec, &frm);
 
-			const u8 tocIndex = i - diskInfo.strack;
+			const u8 tocIndex = static_cast<u8>(i - diskInfo.strack);
 			tocBuff[tocIndex * 10 + 30] = trackInfo.type;
-			tocBuff[tocIndex * 10 + 32] = err == -1 ? 0 : dec_to_bcd(i); //number
+			tocBuff[tocIndex * 10 + 32] = (err == -1) ? 0 : dec_to_bcd(i);
 			tocBuff[tocIndex * 10 + 37] = dec_to_bcd(min);
 			tocBuff[tocIndex * 10 + 38] = dec_to_bcd(sec);
 			tocBuff[tocIndex * 10 + 39] = dec_to_bcd(frm);
-			fprintf(stderr, "Track %u: %u mins %u secs %u frames\n", i, min, sec, frm);
 		}
 	}
 	else
+	{
 		return -1;
+	}
 
 	return 0;
 }
@@ -530,7 +483,7 @@ static s32 DISCreadSector(u8* buffer, u32 lsn, int mode)
 
 static s32 DISCgetDualInfo(s32* dualType, u32* _layer1start)
 {
-	if (src == nullptr)
+	if (!src)
 		return -1;
 	switch (src->GetMediaType())
 	{
@@ -546,28 +499,26 @@ static s32 DISCgetDualInfo(s32* dualType, u32* _layer1start)
 			*dualType = 0;
 			*_layer1start = 0;
 			return 0;
+		default:
+			return -1;
 	}
-	return -1;
 }
 
-const CDVD_API CDVDapi_Disc =
-	{
-		DISCclose,
-		DISCopen,
-		DISCprecache,
-		DISCreadTrack,
-		DISCgetBuffer,
-		DISCreadSubQ,
-		DISCgetTN,
-		DISCgetTD,
-		DISCgetTOC,
-		DISCgetDiskType,
-		DISCgetTrayStatus,
-		DISCctrlTrayOpen,
-		DISCctrlTrayClose,
-
-		DISCnewDiskCB,
-
-		DISCreadSector,
-		DISCgetDualInfo,
+const CDVD_API CDVDapi_Disc = {
+	DISCclose,
+	DISCopen,
+	DISCprecache,
+	DISCreadTrack,
+	DISCgetBuffer,
+	DISCreadSubQ,
+	DISCgetTN,
+	DISCgetTD,
+	DISCgetTOC,
+	DISCgetDiskType,
+	DISCgetTrayStatus,
+	DISCctrlTrayOpen,
+	DISCctrlTrayClose,
+	DISCnewDiskCB,
+	DISCreadSector,
+	DISCgetDualInfo,
 };
