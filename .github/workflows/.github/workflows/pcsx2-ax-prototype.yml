@@ -1,0 +1,41 @@
+name: PCSX2_AX Prototype Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "engines/pcsx2_ax/**"
+      - ".github/workflows/pcsx2-ax-prototype.yml"
+
+jobs:
+  build-pcsx2-ax:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Generation-X-AX
+        uses: actions/checkout@v4
+
+      - name: Install build tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build clang lld
+
+      - name: Configure CMake (Prototype Phase)
+        run: |
+          cmake -S engines/pcsx2_ax -B build/pcsx2_ax -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DPCSX2_AX_PLANNING_ONLY=ON \
+            -DPCSX2_AX_BUILD_HARNESS=ON
+
+      - name: Build with Ninja (-j 4)
+        run: |
+          cmake --build build/pcsx2_ax -- -j 4
+
+      - name: Run harness dry-run checks
+        run: |
+          if [ -x build/pcsx2_ax/pcsx2_ax_harness ]; then
+            ./build/pcsx2_ax/pcsx2_ax_harness --mode ps2 --dry-run
+            ./build/pcsx2_ax/pcsx2_ax_harness --mode coh-h --dry-run
+          fi
