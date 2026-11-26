@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team & The Silicon Preservation Society
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "VMManager_Internal.h"
+
 #include "Achievements.h"
 #include "BuildVersion.h"
 #include "COP0.h"
@@ -13,7 +15,6 @@
 #include "GS.h"
 #include "GS/GS.h"
 #include "Host.h"
-#include "IHardwareModeAdapter.hpp"
 #include "MTGS.h"
 #include "MTVU.h"
 #include "Patch.h"
@@ -25,7 +26,6 @@
 #include "SaveState.h"
 #include "StateWrapper.h"
 #include "USB/USB.h"
-#include "VMManager.h"
 #include "VUmicro.h"
 
 #include "common/Error.h"
@@ -60,22 +60,16 @@ namespace pcsx2_ax::savestate_bridge {
 
 namespace {
 
-inline pcsx2_ax::core::IHardwareModeAdapter*& active_adapter() noexcept
-{
-	static pcsx2_ax::core::IHardwareModeAdapter* adapter = nullptr;
-	return adapter;
-}
+// Reusable scratch arena to avoid per-save heap allocation churn
+struct alignas(pcsx2_ax::core::kCacheLineBytes) SaveScratchArena {
+	std::mutex mtx{};
+	std::vector<u8> zip_staging{};
+};
 
-inline uint32_t& active_bios_crc() noexcept
+SaveScratchArena& scratch_arena() noexcept
 {
-	static uint32_t crc = 0u;
-	return crc;
-}
-
-inline std::array<char, 256>& active_bios_desc_buf() noexcept
-{
-	static std::array<char, 256> buf{"PS2/COH-H Runtime"};
-	return buf;
+	static SaveScratchArena arena{};
+	return arena;
 }
 
 [[nodiscard]] bool sync_file_and_parent(const std::filesystem::path& target_path) noexcept
@@ -108,35 +102,17 @@ inline std::array<char, 256>& active_bios_desc_buf() noexcept
 
 void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter) noexcept
 {
-	active_adapter() = adapter;
-	auto& desc_buf = active_bios_desc_buf();
-	desc_buf.fill('\0');
-
-	if (adapter != nullptr)
-	{
-		const auto info = adapter->bios_descriptor();
-		active_bios_crc() = info.bios_crc;
-		const std::string_view src = info.region_code.empty()
-			? ((adapter->mode() == pcsx2_ax::core::HardwareMode::CohHArcade) ? std::string_view("COH-H") : std::string_view("PS2"))
-			: info.region_code;
-		const std::size_t n = std::min<std::size_t>(src.size(), desc_buf.size() - 1u);
-		std::memcpy(desc_buf.data(), src.data(), n);
-	}
-	else
-	{
-		active_bios_crc() = 0u;
-		std::memcpy(desc_buf.data(), "PS2/COH-H Runtime", 17u);
-	}
+	pcsx2_ax::vm_bridge::bind_mode_adapter(adapter);
 }
 
 [[nodiscard]] bool freeze_mode_state(StateWrapper& sw)
 {
-	if (auto* adapter = active_adapter(); adapter != nullptr)
+	if (auto* adapter = pcsx2_ax::vm_bridge::get_mode_adapter(); adapter != nullptr)
 		return adapter->freeze_state(sw);
 	return true;
 }
 
-[[nodiscard]] bool commit_file_atomically(const char* final_filename, Error* error)
+[[nodiscard]] bool commit_file_atomically(const char* final_filename, uint64_t expected_epoch, Error* error)
 {
 	if (final_filename == nullptr || final_filename[0] == '\0')
 		return false;
@@ -149,8 +125,17 @@ void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter) noexcept
 	if (!std::filesystem::exists(tmp_path, ec))
 		return true;
 
+	// If the mode/session epoch changed mid-flight, discard stale artifact instead of clobbering state
+	if (pcsx2_ax::vm_bridge::current_epoch() != expected_epoch)
+	{
+		std::filesystem::remove(tmp_path, ec);
+		Error::SetStringFmt(error, "Discarded stale save state '{}' due to epoch transition.", dest_path.string());
+		return false;
+	}
+
 	if (!sync_file_and_parent(tmp_path))
 	{
+		std::filesystem::remove(tmp_path, ec);
 		Error::SetStringFmt(error, "Failed fsync on temporary save state '{}'", tmp_path.string());
 		return false;
 	}
@@ -256,12 +241,14 @@ bool SaveStateBase::FreezeBios()
 	if (!FreezeTag("BIOS"))
 		return false;
 
-	const u32 current_crc = pcsx2_ax::savestate_bridge::active_bios_crc();
-	const auto& active_desc = pcsx2_ax::savestate_bridge::active_bios_desc_buf();
+	const auto snap = pcsx2_ax::vm_bridge::current_snapshot();
+	const u32 current_crc = snap.bios.bios_crc;
+	const std::string_view region = snap.bios.region_code.empty() ? std::string_view("PS2/COH-H") : snap.bios.region_code;
 
 	u32 bioscheck = current_crc;
 	std::array<char, 256> biosdesc{};
-	std::memcpy(biosdesc.data(), active_desc.data(), biosdesc.size() - 1u);
+	const std::size_t copy_len = std::min<std::size_t>(region.size(), biosdesc.size() - 1u);
+	std::memcpy(biosdesc.data(), region.data(), copy_len);
 
 	Freeze(bioscheck);
 	Freeze(biosdesc.data());
@@ -272,7 +259,7 @@ bool SaveStateBase::FreezeBios()
 		Console.Error(
 			"    Current BIOS:   %s (crc=0x%08x)\n"
 			"    Savestate BIOS: %s (crc=0x%08x)\n",
-			active_desc.data(), current_crc,
+			biosdesc.data(), current_crc,
 			biosdesc.data(), bioscheck);
 	}
 
@@ -420,8 +407,7 @@ static const char* EntryFilename_Screenshot = "Screenshot.png";
 static const char* EntryFilename_InternalStructures = "PCSX2 Internal Structures.dat";
 static constexpr u32 STATE_PCSX2_VERSION_SIZE = 32;
 
-struct SysState_Component
-{
+struct SysState_Component {
 	const char* name;
 	int (*freeze)(FreezeAction, freezeData*);
 };
@@ -505,8 +491,7 @@ static bool SysState_ComponentFreezeOutNew(SaveStateBase& writer, const char*, u
 	return true;
 }
 
-class BaseSavestateEntry
-{
+class BaseSavestateEntry {
 protected:
 	BaseSavestateEntry() = default;
 public:
@@ -517,8 +502,7 @@ public:
 	virtual bool IsRequired() const = 0;
 };
 
-class MemorySavestateEntry : public BaseSavestateEntry
-{
+class MemorySavestateEntry : public BaseSavestateEntry {
 protected:
 	MemorySavestateEntry() = default;
 public:
@@ -656,6 +640,12 @@ static const std::array<std::unique_ptr<BaseSavestateEntry>, 14> SavestateEntrie
 std::unique_ptr<ArchiveEntryList> SaveState_DownloadState(Error* error)
 {
 	auto destlist = std::make_unique<ArchiveEntryList>();
+	auto& arena = pcsx2_ax::savestate_bridge::scratch_arena();
+	{
+		std::lock_guard<std::mutex> lock(arena.mtx);
+		if (arena.zip_staging.capacity() < 64u * 1024u * 1024u)
+			arena.zip_staging.reserve(64u * 1024u * 1024u);
+	}
 	destlist->GetBuffer().reserve(64u * 1024u * 1024u);
 	destlist->GetBuffer().resize(1024u * 1024u * 16u);
 
@@ -921,6 +911,7 @@ static bool SaveState_AddToZip(zip_t* zf, ArchiveEntryList* srclist, SaveStateSc
 bool SaveState_ZipToDisk(std::unique_ptr<ArchiveEntryList> srclist, std::unique_ptr<SaveStateScreenshotData> screenshot,
                          const char* filename, Error* error)
 {
+	const uint64_t start_epoch = pcsx2_ax::vm_bridge::current_epoch();
 	std::error_code ec;
 	const std::filesystem::path dest_path(filename);
 	if (!dest_path.parent_path().empty())
@@ -951,7 +942,7 @@ bool SaveState_ZipToDisk(std::unique_ptr<ArchiveEntryList> srclist, std::unique_
 		return false;
 	}
 
-	return pcsx2_ax::savestate_bridge::commit_file_atomically(filename, error);
+	return pcsx2_ax::savestate_bridge::commit_file_atomically(filename, start_epoch, error);
 }
 
 bool SaveState_ReadScreenshot(const std::string& filename, u32* out_width, u32* out_height, std::vector<u32>* out_pixels)
@@ -1012,11 +1003,13 @@ static bool LoadInternalStructuresState(zip_t* zf, s64 index, Error* error)
 	if (!zff)
 		return false;
 
-	std::vector<u8> buffer(static_cast<std::size_t>(zst.size));
-	if (zip_fread(zff.get(), buffer.data(), buffer.size()) != static_cast<zip_int64_t>(buffer.size()))
+	auto& arena = pcsx2_ax::savestate_bridge::scratch_arena();
+	std::lock_guard<std::mutex> lock(arena.mtx);
+	arena.zip_staging.resize(static_cast<std::size_t>(zst.size));
+	if (zip_fread(zff.get(), arena.zip_staging.data(), arena.zip_staging.size()) != static_cast<zip_int64_t>(arena.zip_staging.size()))
 		return false;
 
-	memLoadingState state(buffer);
+	memLoadingState state(arena.zip_staging);
 	return state.FreezeBios() && state.FreezeInternals(error);
 }
 
