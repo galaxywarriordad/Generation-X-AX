@@ -37,16 +37,41 @@ struct SnesFrameTelemetry {
     bool xrun{false};
 };
 
-struct SnesAdapterExtras {
+struct SnesEngineConfig {
     bool enabled{true};
+    std::string engine_backend{"bsnes"};
+    std::string hardware_profile{"x86_64_coffeelake_maxwell_231"};
+    SnesPreset preset{SnesPreset::StockCycleExact};
     AudioFilterMode audio_filter_mode{AudioFilterMode::Default};
     bool auto_detect_coprocessor{true};
+
+    // 2:3:1 core topology on x86_64
     int audio_core{0};
     int audio_sched_fifo_priority{80};
     int video_core{1};
     int housekeeping_core{5};
+
+    // Exclusive ALSA / DAC settings
+    std::string alsa_device{"hw:CARD=FC3,DEV=0"};
     std::string alsa_format{"S32_LE"};
+    unsigned alsa_rate{48000u};
+    unsigned alsa_period_frames{96u};
+    unsigned alsa_buffer_periods{4u};
     std::string dac_lock_path{"/run/lock/ax-dac.lock"};
+
+    // Timing & rate guard
+    bool rate_guard_enabled{true};
+    int rate_guard_max_ppm{150};
+    int rate_guard_ring_target_pct{50};
+    int rate_guard_hysteresis_pct{5};
+
+    // Preset overrides
+    int cpu_overclock_pct{100};
+    int coprocessor_overclock_pct{100};
+    int runahead_frames{0};
+    bool thread_boost_coprocessor{false};
+
+    // Staging & atomic persistence
     bool shm_staging_enabled{true};
     std::string controls_config_path{"/userdata/system/piccolo-ax/snes_controls.cfg"};
     std::string shm_rom_dir{"/dev/shm/piccolo-ax/snes/roms"};
@@ -70,7 +95,7 @@ public:
 
     void ConfigureAudioFilter(AudioFilterMode mode) noexcept;
     void ProcessAudioFilterStereo(float* interleaved_lr, std::size_t frame_count) noexcept;
-    AudioFilterMode audio_filter_mode() const noexcept { return extras_.audio_filter_mode; }
+    AudioFilterMode audio_filter_mode() const noexcept { return cfg_.audio_filter_mode; }
 
     int ComputeRateGuardPpm(int current_ring_fill_pct) const noexcept;
 
@@ -84,8 +109,8 @@ public:
     bool SaveSnesControlsAtomic(const ax::ui::retro::SnesControllerMap& map,
                                 const std::string& target_path) const;
 
-    const SnesRuntimeConfig& config() const noexcept { return runtime_cfg_; }
-    const SnesAdapterExtras& extras() const noexcept { return extras_; }
+    const SnesEngineConfig& config() const noexcept { return cfg_; }
+    SnesRuntimeConfig ToRuntimeConfig() const;
     const std::string& staged_rom_path() const noexcept { return staged_rom_path_; }
     const std::string& staged_sram_path() const noexcept { return staged_sram_path_; }
     const SnesFrameTelemetry& latest_telemetry() const noexcept { return telemetry_; }
@@ -97,8 +122,7 @@ private:
     bool FlushSavesAtomicallyToStorage();
     void ApplyCoreAffinities();
 
-    SnesRuntimeConfig runtime_cfg_{};
-    SnesAdapterExtras extras_{};
+    SnesEngineConfig cfg_{};
     SnesAudioFilterState filter_state_{};
     SnesFrameTelemetry telemetry_{};
     std::string rom_path_{};
