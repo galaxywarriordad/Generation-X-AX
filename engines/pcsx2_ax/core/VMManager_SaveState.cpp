@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team & The Silicon Preservation Society
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "VMManager_Internal.h"
+
 #include "Achievements.h"
 #include "GS/GSCapture.h"
 #include "GSDumpReplayer.h"
@@ -10,7 +12,6 @@
 #include "MTGS.h"
 #include "Recording/InputRecording.h"
 #include "SaveState.h"
-#include "VMManager.h"
 
 #include "common/Console.h"
 #include "common/Error.h"
@@ -22,54 +23,45 @@
 #include "fmt/format.h"
 
 #include <cstring>
-#include <deque>
 #include <filesystem>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
-
-#if defined(__unix__) || defined(__APPLE__)
-#include <fcntl.h>
-#include <unistd.h>
-#endif
-
-namespace pcsx2_ax::vm_bridge {
-[[nodiscard]] pcsx2_ax::core::IHardwareModeAdapter* get_mode_adapter() noexcept;
-[[nodiscard]] bool is_memcard_busy() noexcept;
-} // namespace pcsx2_ax::vm_bridge
-
-namespace VMManager {
-
-std::string GetSaveStateFileName(const char* game_serial, u32 game_crc, s32 slot, bool backup = false);
-std::string GetSaveStateFileName(const char* filename, s32 slot, bool backup = false);
-bool HasSaveStateInSlot(const char* game_serial, u32 game_crc, s32 slot);
-std::string GetCurrentSaveStateFileName(s32 slot, bool backup = false);
-bool DoLoadState(const char* filename, Error* error = nullptr);
-void DoSaveState(const char* filename, s32 slot_for_message, bool zip_on_thread, bool backup_old_state,
-                 std::function<void(const std::string&)> error_callback);
-void ZipSaveState(std::unique_ptr<ArchiveEntryList> elist, std::unique_ptr<SaveStateScreenshotData> screenshot,
-                  const char* filename, s32 slot_for_message, std::function<void(const std::string&)> error_callback);
-void ZipSaveStateOnThread(std::unique_ptr<ArchiveEntryList> elist, std::unique_ptr<SaveStateScreenshotData> screenshot,
-                          std::string filename, s32 slot_for_message, std::function<void(const std::string&)> error_callback);
-void WaitForSaveStateFlush();
-u32 DeleteSaveStates(const char* game_serial, u32 game_crc, bool also_backups = true);
-bool LoadState(const char* filename, Error* error = nullptr);
-bool LoadStateFromSlot(s32 slot, bool backup, Error* error = nullptr);
-void SaveState(const char* filename, bool zip_on_thread, bool backup_old_state,
-               std::function<void(const std::string&)> error_callback);
-void SaveStateToSlot(s32 slot, bool zip_on_thread, std::function<void(const std::string&)> error_callback);
-void Reset();
-
-} // namespace VMManager
+#include <vector>
 
 namespace {
 
-std::deque<std::thread> s_save_state_threads;
-std::mutex s_save_state_threads_mutex;
+struct WorkerEntry {
+	std::thread thread;
+	bool completed{false};
+};
+
+std::vector<WorkerEntry> s_save_state_workers;
+std::mutex s_save_state_workers_mutex;
+
+void reap_completed_workers_locked()
+{
+	for (auto it = s_save_state_workers.begin(); it != s_save_state_workers.end();)
+	{
+		if (it->completed && it->thread.joinable())
+		{
+			it->thread.join();
+			it = s_save_state_workers.erase(it);
+		}
+		else
+		{
+			++it;
+		}
+	}
+}
 
 [[nodiscard]] std::filesystem::path resolve_mode_save_dir()
 {
+	const auto snap = pcsx2_ax::vm_bridge::current_snapshot();
+	if (!snap.save_directory.empty())
+		return std::filesystem::path(snap.save_directory);
+
 	if (const auto* adapter = pcsx2_ax::vm_bridge::get_mode_adapter(); adapter != nullptr)
 	{
 		const auto dir = adapter->save_directory();
@@ -85,42 +77,6 @@ std::mutex s_save_state_threads_mutex;
 		return std::filesystem::path(EmuFolders::Savestates);
 
 	return std::filesystem::path("/userdata/saves/ps2/");
-}
-
-[[nodiscard]] bool atomic_commit_file(const std::filesystem::path& final_path) noexcept
-{
-#if defined(__unix__) || defined(__APPLE__)
-	std::error_code ec;
-	const std::filesystem::path tmp_path =
-		final_path.parent_path() / (final_path.filename().string() + ".tmp");
-	if (!std::filesystem::exists(tmp_path, ec))
-		return true;
-
-	const int fd = ::open(tmp_path.c_str(), O_RDONLY);
-	if (fd >= 0)
-	{
-		(void)::fsync(fd);
-		::close(fd);
-	}
-
-	std::filesystem::rename(tmp_path, final_path, ec);
-	if (ec)
-	{
-		std::filesystem::remove(tmp_path, ec);
-		return false;
-	}
-
-	const int dir_fd = ::open(final_path.parent_path().c_str(), O_RDONLY | O_DIRECTORY);
-	if (dir_fd >= 0)
-	{
-		(void)::fsync(dir_fd);
-		::close(dir_fd);
-	}
-	return true;
-#else
-	(void)final_path;
-	return true;
-#endif
 }
 
 } // namespace
@@ -223,9 +179,20 @@ void VMManager::DoSaveState(const char* filename, s32 slot_for_message, bool zip
 
 	if (zip_on_thread)
 	{
-		std::unique_lock lock(s_save_state_threads_mutex);
-		s_save_state_threads.emplace_back(&VMManager::ZipSaveStateOnThread, std::move(elist), std::move(screenshot),
-			std::string(filename), slot_for_message, std::move(error_callback));
+		std::unique_lock lock(s_save_state_workers_mutex);
+		reap_completed_workers_locked();
+		s_save_state_workers.emplace_back();
+		WorkerEntry& entry = s_save_state_workers.back();
+		entry.thread = std::thread([&entry,
+		                            elist = std::move(elist),
+		                            screenshot = std::move(screenshot),
+		                            dest = std::string(filename),
+		                            slot_for_message,
+		                            error_callback = std::move(error_callback)]() mutable {
+			ZipSaveState(std::move(elist), std::move(screenshot), dest.c_str(), slot_for_message, std::move(error_callback));
+			std::lock_guard<std::mutex> wlock(s_save_state_workers_mutex);
+			entry.completed = true;
+		});
 	}
 	else
 	{
@@ -240,16 +207,11 @@ void VMManager::ZipSaveState(std::unique_ptr<ArchiveEntryList> elist, std::uniqu
 {
 	const Common::Timer timer;
 
+	// SaveState_ZipToDisk performs epoch-checked .tmp -> fsync -> rename commit.
 	Error error;
 	if (!SaveState_ZipToDisk(std::move(elist), std::move(screenshot), filename, &error))
 	{
 		error_callback(error.GetDescription());
-		return;
-	}
-
-	if (!atomic_commit_file(std::filesystem::path(filename)))
-	{
-		error_callback(fmt::format("Failed atomic commit for '{}'", filename));
 		return;
 	}
 
@@ -267,31 +229,21 @@ void VMManager::ZipSaveStateOnThread(std::unique_ptr<ArchiveEntryList> elist, st
                                      std::string filename, s32 slot_for_message, std::function<void(const std::string&)> error_callback)
 {
 	ZipSaveState(std::move(elist), std::move(screenshot), filename.c_str(), slot_for_message, std::move(error_callback));
-
-	const auto this_id = std::this_thread::get_id();
-	std::unique_lock lock(s_save_state_threads_mutex);
-	for (auto it = s_save_state_threads.begin(); it != s_save_state_threads.end(); ++it)
-	{
-		if (it->get_id() == this_id)
-		{
-			it->detach();
-			s_save_state_threads.erase(it);
-			break;
-		}
-	}
 }
 
 void VMManager::WaitForSaveStateFlush()
 {
-	std::unique_lock lock(s_save_state_threads_mutex);
-	while (!s_save_state_threads.empty())
+	std::unique_lock lock(s_save_state_workers_mutex);
+	for (auto& entry : s_save_state_workers)
 	{
-		std::thread save_thread(std::move(s_save_state_threads.front()));
-		s_save_state_threads.pop_front();
-		lock.unlock();
-		save_thread.join();
-		lock.lock();
+		if (entry.thread.joinable())
+		{
+			lock.unlock();
+			entry.thread.join();
+			lock.lock();
+		}
 	}
+	s_save_state_workers.clear();
 }
 
 u32 VMManager::DeleteSaveStates(const char* game_serial, u32 game_crc, bool also_backups)
