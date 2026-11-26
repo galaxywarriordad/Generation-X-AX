@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team & The Silicon Preservation Society
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "VMManager_Internal.h"
+
 #include "Achievements.h"
 #include "CDVD/IsoReader.h"
 #include "Elfheader.h"
@@ -8,14 +10,11 @@
 #include "GameList.h"
 #include "GSDumpReplayer.h"
 #include "Host.h"
-#include "IHardwareModeAdapter.hpp"
 #include "ImGui/FullscreenUI.h"
 #include "MTGS.h"
 #include "Patch.h"
-#include "VMManager.h"
 
 #include "common/Console.h"
-#include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
 #include "common/StringUtil.h"
@@ -26,39 +25,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-
-namespace pcsx2_ax::vm_bridge {
-void set_media_path(std::string path, bool ready);
-[[nodiscard]] const std::string& get_media_path() noexcept;
-[[nodiscard]] bool is_media_ready() noexcept;
-[[nodiscard]] pcsx2_ax::core::BiosDescriptor current_bios_info() noexcept;
-} // namespace pcsx2_ax::vm_bridge
-
-namespace VMManager {
-
-extern std::atomic<VMState> g_vm_state;
-extern std::string g_elf_override;
-extern std::string g_game_settings_override;
-extern bool g_fast_boot_requested;
-
-bool AutoDetectSource(const std::string& filename, Error* error = nullptr);
-void UpdateDiscDetails(bool booting);
-void ClearDiscDetails();
-void HandleELFChange(bool verbose_patches_if_changed);
-void UpdateELFInfo(std::string elf_path);
-void ClearELFInfo();
-void ReportGameChangeToHost();
-bool HasBootedELF();
-std::string GetDiscOverrideFromGameSettings(const std::string& elf_path);
-bool UpdateGameSettingsLayer();
-void ApplySettings();
-void ApplyCoreSettings();
-void ReloadPINE();
-void UpdateDiscordPresence(bool update_session_time);
-void SaveSessionTime(const std::string& prev_serial);
-void Reset();
-
-} // namespace VMManager
 
 namespace {
 
@@ -140,7 +106,11 @@ std::string VMManager::GetSerialForGameSettings()
 
 void VMManager::UpdateDiscDetails(bool booting)
 {
-	const auto bios = pcsx2_ax::vm_bridge::current_bios_info();
+	const auto snap = pcsx2_ax::vm_bridge::current_snapshot();
+	const auto& bios = snap.bios;
+	const std::string media_path = pcsx2_ax::vm_bridge::get_media_path();
+	const bool media_ready = pcsx2_ax::vm_bridge::is_media_ready();
+
 	{
 		std::unique_lock lock(s_info_mutex);
 		const std::string old_serial = std::move(s_disc_serial);
@@ -157,9 +127,9 @@ void VMManager::UpdateDiscDetails(bool booting)
 			s_cur_region = "NTSC";
 			serial_is_valid = !s_disc_serial.empty();
 		}
-		else if (pcsx2_ax::vm_bridge::is_media_ready())
+		else if (media_ready)
 		{
-			s_disc_serial = Path::GetFileTitle(pcsx2_ax::vm_bridge::get_media_path());
+			s_disc_serial = Path::GetFileTitle(media_path);
 			s_disc_version = fmt::format("{:04X}", bios.rom_version);
 			s_cur_region = bios.region_code.empty() ? "NTSC" : std::string(bios.region_code);
 			serial_is_valid = !s_disc_serial.empty();
@@ -187,7 +157,7 @@ void VMManager::UpdateDiscDetails(bool booting)
 
 		s_title_en_search.clear();
 		s_title_en_replace.clear();
-		std::string custom_title = GameList::GetCustomTitleForPath(pcsx2_ax::vm_bridge::get_media_path());
+		std::string custom_title = GameList::GetCustomTitleForPath(media_path);
 		if (serial_is_valid)
 		{
 			if (const GameDatabaseSchema::GameEntry* game = GameDatabase::findGame(s_disc_serial))
@@ -297,7 +267,7 @@ void VMManager::ClearELFInfo()
 
 void VMManager::ReportGameChangeToHost()
 {
-	const std::string& disc_path = pcsx2_ax::vm_bridge::get_media_path();
+	const std::string disc_path = pcsx2_ax::vm_bridge::get_media_path();
 	const u32 crc_to_report = HasBootedELF() ? s_current_crc : 0;
 	const bool prefer_english = Host::GetBaseBoolSettingValue("UI", "PreferEnglishGameList", false);
 	const std::string game_title = GetTitle(prefer_english);
@@ -333,9 +303,10 @@ std::string VMManager::Internal::GetCurrentRegion()
 
 bool VMManager::AutoDetectSource(const std::string& filename, Error* error)
 {
+	auto& ctx = pcsx2_ax::vm_bridge::active_context();
 	if (filename.empty())
 	{
-		pcsx2_ax::vm_bridge::set_media_path({}, false);
+		pcsx2_ax::vm_bridge::set_media_path({}, false, ctx);
 		return true;
 	}
 
@@ -347,27 +318,28 @@ bool VMManager::AutoDetectSource(const std::string& filename, Error* error)
 
 	if (IsGSDumpFileName(filename))
 	{
-		pcsx2_ax::vm_bridge::set_media_path({}, false);
+		pcsx2_ax::vm_bridge::set_media_path({}, false, ctx);
 		return GSDumpReplayer::Initialize(filename.c_str(), error);
 	}
 
 	if (IsElfFileName(filename))
 	{
 		std::string disc_path = GetDiscOverrideFromGameSettings(filename);
-		pcsx2_ax::vm_bridge::set_media_path(disc_path, !disc_path.empty());
+		pcsx2_ax::vm_bridge::set_media_path(disc_path, !disc_path.empty(), ctx);
 		g_elf_override = filename;
 		return true;
 	}
 
-	pcsx2_ax::vm_bridge::set_media_path(filename, true);
+	pcsx2_ax::vm_bridge::set_media_path(filename, true, ctx);
 	return true;
 }
 
 bool VMManager::ChangeDisc(CDVD_SourceType source, std::string path)
 {
-	const std::string old_path(pcsx2_ax::vm_bridge::get_media_path());
+	auto& ctx = pcsx2_ax::vm_bridge::active_context();
+	const std::string old_path(pcsx2_ax::vm_bridge::get_media_path(ctx));
 	const bool ready = (source != CDVD_SourceType::NoDisc) && (!path.empty() || !old_path.empty());
-	pcsx2_ax::vm_bridge::set_media_path(!path.empty() ? std::move(path) : old_path, ready);
+	pcsx2_ax::vm_bridge::set_media_path(!path.empty() ? std::move(path) : old_path, ready, ctx);
 	UpdateDiscDetails(false);
 	return true;
 }
