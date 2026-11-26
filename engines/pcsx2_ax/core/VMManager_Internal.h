@@ -23,24 +23,38 @@ class SettingsInterface;
 
 namespace pcsx2_ax::vm_bridge {
 
-void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter) noexcept;
-[[nodiscard]] pcsx2_ax::core::IHardwareModeAdapter* get_mode_adapter() noexcept;
-[[nodiscard]] uint64_t current_epoch() noexcept;
-[[nodiscard]] uint64_t advance_epoch() noexcept;
-[[nodiscard]] pcsx2_ax::core::ModeEpochSnapshot current_snapshot() noexcept;
+[[nodiscard]] pcsx2_ax::core::VmContext& default_context() noexcept;
+void set_active_context(pcsx2_ax::core::VmContext* ctx) noexcept;
+[[nodiscard]] pcsx2_ax::core::VmContext& active_context() noexcept;
 
-void set_media_path(std::string path, bool ready);
-[[nodiscard]] const std::string& get_media_path() noexcept;
-[[nodiscard]] bool is_media_ready() noexcept;
+void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter,
+                       pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+[[nodiscard]] pcsx2_ax::core::IHardwareModeAdapter* get_mode_adapter(
+	const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
 
-void set_memcard_busy(bool busy) noexcept;
-[[nodiscard]] bool is_memcard_busy() noexcept;
+[[nodiscard]] uint64_t current_epoch(const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+[[nodiscard]] uint64_t advance_epoch(pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+[[nodiscard]] pcsx2_ax::core::ModeEpochSnapshot current_snapshot(
+	const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
 
-[[nodiscard]] bool init_mode_subsystems();
-[[nodiscard]] bool reset_mode_subsystems();
-void shutdown_mode_subsystems() noexcept;
-void notify_mode_vsync() noexcept;
-[[nodiscard]] pcsx2_ax::core::BiosDescriptor current_bios_info() noexcept;
+void record_telemetry(const pcsx2_ax::core::FrameTelemetrySample& sample,
+                      pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+[[nodiscard]] bool read_latest_telemetry(pcsx2_ax::core::FrameTelemetrySample& out_sample,
+                                       const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+
+void set_media_path(std::string path, bool ready, pcsx2_ax::core::VmContext& ctx = active_context());
+[[nodiscard]] const std::string& get_media_path(const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+[[nodiscard]] bool is_media_ready(const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+
+void set_memcard_busy(bool busy, pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+[[nodiscard]] bool is_memcard_busy(const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+
+[[nodiscard]] bool init_mode_subsystems(pcsx2_ax::core::VmContext& ctx = active_context());
+[[nodiscard]] bool reset_mode_subsystems(pcsx2_ax::core::VmContext& ctx = active_context());
+void shutdown_mode_subsystems(pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+void notify_mode_vsync(pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
+[[nodiscard]] pcsx2_ax::core::BiosDescriptor current_bios_info(
+	const pcsx2_ax::core::VmContext& ctx = active_context()) noexcept;
 
 } // namespace pcsx2_ax::vm_bridge
 
