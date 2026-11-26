@@ -121,7 +121,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Preallocated Core 1 HUD strip buffer (0 heap allocations in loop)
     constexpr int kHudW = 320;
     constexpr int kHudH = 24;
     std::array<std::uint32_t, static_cast<std::size_t>(kHudW * kHudH)> hud_buf{};
@@ -139,12 +138,9 @@ int main(int argc, char** argv) {
                   << ", scanlines=" << scanline_pct << "%)\n";
     }
 
-    // Preallocated stereo frame buffer for non-Core-0 DSP stage (Cores 2-4)
     std::array<float, 96 * 2> stereo_frames{};
     adapter.ProcessAudioFilterStereo(stereo_frames.data(), 96);
 
-    // RunSnesCoreLoop drives LoadCartridge, StepFrame, RateGuardPpm, RecordFrameTelemetry,
-    // and UnloadCartridge until g_stop_flag is set (SIGINT / SIGTERM / SIGUSR1).
     const bool loop_ok = ax::genx::snes::RunSnesCoreLoop(
         adapter,
         adapter.staged_rom_path(),
