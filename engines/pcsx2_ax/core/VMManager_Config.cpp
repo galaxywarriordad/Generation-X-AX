@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team & The Silicon Preservation Society
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "VMManager_Internal.h"
+
 #include "Achievements.h"
 #include "BuildVersion.h"
 #include "DEV9/DEV9.h"
@@ -21,7 +23,6 @@
 #include "Patch.h"
 #include "SPU2/spu2.h"
 #include "USB/USB.h"
-#include "VMManager.h"
 
 #include "common/Console.h"
 #include "common/FileSystem.h"
@@ -30,7 +31,6 @@
 #include "common/SettingsWrapper.h"
 #include "common/SmallString.h"
 #include "common/StringUtil.h"
-#include "common/Threading.h"
 #include "common/Timer.h"
 
 #include "IconsFontAwesome.h"
@@ -52,64 +52,7 @@
 #include "common/RedtapeWindows.h"
 #include <timeapi.h>
 #include <powrprof.h>
-#include <wil/com.h>
-#include <dxgi.h>
 #endif
-
-namespace VMManager {
-
-extern std::atomic<VMState> g_vm_state;
-extern bool g_cpu_implementation_changed;
-extern Threading::ThreadHandle g_vm_thread_handle;
-extern std::string g_game_settings_override;
-extern LimiterModeType g_limiter_mode;
-extern float g_target_speed;
-extern bool g_target_speed_can_sync_to_host;
-extern bool g_target_speed_synced_to_host;
-extern bool g_use_vsync_for_timing;
-
-void LogCPUCapabilities();
-void LoadSettings();
-void LoadCoreSettings(SettingsInterface& si);
-void ApplySettings();
-void ApplyCoreSettings();
-void LoadInputBindings(SettingsInterface& si, std::unique_lock<std::mutex>& lock);
-bool UpdateGameSettingsLayer();
-void ApplyGameFixes();
-void EnforceAchievementsChallengeModeSettings();
-void LogUnsafeSettingsToConsole(const std::string& messages);
-void WarnAboutUnsafeSettings();
-void CheckForConfigChanges(const Pcsx2Config& old_config);
-void CheckForCPUConfigChanges(const Pcsx2Config& old_config);
-void CheckForGSConfigChanges(const Pcsx2Config& old_config);
-void CheckForEmulationSpeedConfigChanges(const Pcsx2Config& old_config);
-void CheckForPatchConfigChanges(const Pcsx2Config& old_config);
-void CheckForDEV9ConfigChanges(const Pcsx2Config& old_config);
-void CheckForMiscConfigChanges(const Pcsx2Config& old_config);
-void SetDefaultLoggingSettings(SettingsInterface& si);
-void UpdateLoggingSettings(SettingsInterface& si);
-void UpdateInhibitScreensaver(bool inhibit);
-void AccumulateSessionPlaytime();
-void ResetResumeTimestamp();
-void SaveSessionTime(const std::string& prev_serial);
-u64 GetSessionPlayedTime();
-void ReloadPINE();
-float GetTargetSpeedForLimiterMode(LimiterModeType mode);
-void UpdateTargetSpeed();
-bool IsTargetSpeedAdjustedToHost();
-float GetFrameRate();
-void ResetFrameLimiter();
-void SetTimerResolutionIncreased(bool enabled);
-void SetHardwareDependentDefaultSettings(SettingsInterface& si);
-void EnsureCPUInfoInitialized();
-void SetEmuThreadAffinities();
-void InitializeDiscordPresence();
-void ShutdownDiscordPresence();
-void UpdateDiscordPresence(bool update_session_time);
-void PollDiscordPresence();
-bool HasBootedELF();
-
-} // namespace VMManager
 
 namespace {
 
@@ -1013,7 +956,9 @@ void VMManager::PollDiscordPresence()
 
 void VMManager::LogCPUCapabilities()
 {
-	Console.WriteLn(Color_StrongGreen, "PCSX2_AX %s", BuildVersion::GitRev);
+	const auto snap = pcsx2_ax::vm_bridge::current_snapshot();
+	Console.WriteLn(Color_StrongGreen, "PCSX2_AX %s (epoch={}, save_dir={})",
+	                BuildVersion::GitRev, snap.epoch, snap.save_directory);
 	Console.WriteLnFmt("Savestate version: 0x{:x}\n", g_SaveVersion);
 
 	const CPUInfo& cpuinfo = GetCPUInfo();
@@ -1133,7 +1078,6 @@ void VMManager::FrameAdvance(u32 num_frames)
 		return;
 	}
 
-	extern u32 g_frame_advance_count;
 	g_frame_advance_count = num_frames;
 	SetState(VMState::Running);
 }
