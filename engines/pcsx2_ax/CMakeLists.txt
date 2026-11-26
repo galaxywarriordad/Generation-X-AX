@@ -288,8 +288,7 @@ struct GsFinishState {
 	bool gsFINISHPending = false;
 };
 
-class gifUnit {
-public:
+struct gifUnit {
 	GsSignalState gsSIGNAL{};
 	GsFinishState gsFINISH{};
 	void Reset() noexcept {
@@ -338,6 +337,31 @@ struct tGsSigLblId {
 inline tGS_IMR GSIMR{};
 inline tCSRreg CSRreg{};
 inline tGsSigLblId GSSIGLBLID{};
+")
+
+	pcsx2_ax_write_stub("MemoryTypes.h"
+"#pragma once
+#include <cstddef>
+#include <cstdint>
+#include \"Common.h\"
+
+inline u8* eeMem = nullptr;
+inline u8* iopMem = nullptr;
+inline u8* vuMem = nullptr;
+")
+
+	pcsx2_ax_write_stub("R5900.h"
+"#pragma once
+#include <cstdint>
+#include \"Common.h\"
+
+struct cpuRegsStruct {
+	uint32_t pc = 0;
+	uint32_t cycle = 0;
+	uint32_t branch = 0;
+};
+
+inline cpuRegsStruct cpuRegs{};
 ")
 
 	pcsx2_ax_write_stub("Host.h"
@@ -475,7 +499,13 @@ class Error;
 namespace FileSystem {
 
 inline std::FILE* OpenCFile(const char* path, const char* mode, Error* = nullptr) noexcept {
+#if defined(_MSC_VER)
+	std::FILE* fp = nullptr;
+	fopen_s(&fp, path, mode);
+	return fp;
+#else
 	return std::fopen(path, mode);
+#endif
 }
 
 inline int64_t FSeek64(std::FILE* fp, int64_t offset, int origin) noexcept {
@@ -490,6 +520,32 @@ inline bool DirectoryExists(const char*) noexcept { return false; }
 inline bool FileExists(const char*) noexcept { return false; }
 
 } // namespace FileSystem
+")
+
+	pcsx2_ax_write_stub("common/Path.h"
+"#pragma once
+#include <filesystem>
+#include <string>
+#include <string_view>
+
+namespace Path {
+
+inline std::string Combine(std::string_view lhs, std::string_view rhs) {
+	return (std::filesystem::path(lhs) / std::filesystem::path(rhs)).string();
+}
+
+inline std::string_view GetFileName(std::string_view path) noexcept {
+	const auto pos = path.find_last_of(\"/\\\\\");
+	return pos == std::string_view::npos ? path : path.substr(pos + 1);
+}
+
+inline std::string ReplaceExtension(std::string_view path, std::string_view ext) {
+	std::filesystem::path p(path);
+	p.replace_extension(ext);
+	return p.string();
+}
+
+} // namespace Path
 ")
 
 	pcsx2_ax_write_stub("CDVD/CDVDcommon.h"
