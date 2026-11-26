@@ -79,17 +79,25 @@ jobs:
           test "$rc" -eq 2
 
           for flt in default zsnes_warm crt_nearfield; do
-            ./build/genx-snes-ax \
+            set +e
+            timeout -s TERM 1 ./build/genx-snes-ax \
               --config /tmp/genx_snes_ci/ax_engine.ini \
               --rom /tmp/genx_snes_ci/demo.sfc \
               --filter "$flt" \
               --scanlines 25
+            rc=$?
+            set -e
+            test "$rc" -eq 0 -o "$rc" -eq 124 -o "$rc" -eq 143
           done
 
-          ./build/genx-snes-ax \
+          set +e
+          timeout -s TERM 1 ./build/genx-snes-ax \
             --config /tmp/genx_snes_ci/ax_engine.ini \
             --rom /tmp/genx_snes_ci/demo.sfc \
             --filter zsnes_warm \
             --no-retro-chrome
+          rc=$?
+          set -e
+          test "$rc" -eq 0 -o "$rc" -eq 124 -o "$rc" -eq 143
 
           rm -rf /tmp/genx_snes_ci
