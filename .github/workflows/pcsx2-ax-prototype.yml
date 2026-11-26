@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout Generation-X-AX
         uses: actions/checkout@v4
+        with:
+          submodules: false
 
       - name: Install build tooling
         run: |
