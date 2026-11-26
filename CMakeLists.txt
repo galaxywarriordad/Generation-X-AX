@@ -93,6 +93,10 @@ using uint = unsigned int;
 using sptr = intptr_t;
 using uptr = uintptr_t;
 
+namespace Ps2MemSize {
+inline constexpr size_t GSregs = 0x2000;
+}
+
 #ifndef __fi
 #if defined(_MSC_VER)
 #define __fi __forceinline
@@ -271,15 +275,69 @@ inline double GetVerticalFrequency() { return 59.94; }
 
 	pcsx2_ax_write_stub("Gif_Unit.h"
 "#pragma once
+#include <array>
 #include <cstdint>
+
+struct GsSignalState {
+	bool queued = false;
+	std::array<uint32_t, 2> data{0, 0};
+};
+
+struct GsFinishState {
+	bool gsFINISHFired = false;
+	bool gsFINISHPending = false;
+};
 
 class gifUnit {
 public:
-	void Reset() noexcept {}
+	GsSignalState gsSIGNAL{};
+	GsFinishState gsFINISH{};
+	void Reset() noexcept {
+		gsSIGNAL.queued = false;
+		gsSIGNAL.data.fill(0);
+		gsFINISH.gsFINISHFired = false;
+		gsFINISH.gsFINISHPending = false;
+	}
 	bool Freeze() noexcept { return true; }
 };
 
 inline gifUnit g_gifUnit{};
+")
+
+	pcsx2_ax_write_stub("GS.h"
+"#pragma once
+#include <cstdint>
+#include \"Common.h\"
+
+struct tGS_CSR {
+	uint64_t raw = 0;
+	bool SIGNAL = false;
+	bool FINISH = false;
+	bool RESET() const noexcept { return (raw & 0x2ULL) != 0; }
+};
+
+struct tGS_IMR {
+	uint64_t raw = 0;
+	void reset() noexcept { raw = 0; }
+};
+
+struct tCSRreg {
+	bool SIGNAL = false;
+	bool FINISH = false;
+	void Reset() noexcept {
+		SIGNAL = false;
+		FINISH = false;
+	}
+};
+
+struct tGsSigLblId {
+	uint32_t SIGID = 0;
+	uint32_t LBLID = 0;
+};
+
+inline tGS_IMR GSIMR{};
+inline tCSRreg CSRreg{};
+inline tGsSigLblId GSSIGLBLID{};
 ")
 
 	pcsx2_ax_write_stub("Host.h"
@@ -288,7 +346,10 @@ inline gifUnit g_gifUnit{};
 #include <string>
 #include <string_view>
 
-class SettingsInterface;
+class SettingsInterface {
+public:
+	virtual ~SettingsInterface() = default;
+};
 
 namespace Host {
 
@@ -335,6 +396,8 @@ inline void SetInputSettingsLayer(SettingsInterface*, std::unique_lock<std::mute
 #include <functional>
 
 enum class GSVideoMode { Uninitialized = 0, NTSC, PAL };
+using GS_VideoMode = GSVideoMode;
+
 inline GSVideoMode gsVideoMode = GSVideoMode::Uninitialized;
 inline bool gsIsInterlaced = false;
 inline void GSgetInternalResolution(int* width, int* height) noexcept {
@@ -342,12 +405,12 @@ inline void GSgetInternalResolution(int* width, int* height) noexcept {
 	if (height) *height = 480;
 }
 inline int GSgetDisplayMode() noexcept { return 0; }
-inline double GetVerticalFrequency() noexcept { return 59.94; }
 inline float GSGetHostRefreshRate() noexcept { return 60.0f; }
 
 namespace MTGS {
 inline void WaitGS(bool = false) noexcept {}
 inline void ReleaseGS() noexcept {}
+inline void ResetGS(bool = false) noexcept {}
 inline void ApplySettings() noexcept {}
 inline void UpdateVSyncMode() noexcept {}
 inline void GameChanged() noexcept {}
@@ -367,6 +430,92 @@ inline DummyThreadHandle& GetThreadHandle() noexcept {
 #define ICON_FA_FLOPPY_DISK \"\"
 #define ICON_FA_FOLDER_OPEN \"\"
 #define ICON_FA_TRIANGLE_EXCLAMATION \"\"
+")
+
+	pcsx2_ax_write_stub("common/Pcsx2Defs.h"
+"#pragma once
+#include <cstddef>
+#include <cstdint>
+#include \"Common.h\"
+
+#if defined(_MSC_VER)
+#define PCSX2_EXPORT_API __declspec(dllexport)
+#elif defined(__GNUC__) || defined(__clang__)
+#define PCSX2_EXPORT_API __attribute__((visibility(\"default\")))
+#else
+#define PCSX2_EXPORT_API
+#endif
+
+static constexpr size_t HOST_PAGE_SIZE = 4096;
+")
+
+	pcsx2_ax_write_stub("common/Assertions.h"
+"#pragma once
+#include \"common/Console.h\"
+")
+
+	pcsx2_ax_write_stub("common/EnumOps.h"
+"#pragma once
+#include <type_traits>
+
+template <typename E>
+concept ScopedEnum = std::is_enum_v<E>;
+")
+
+	pcsx2_ax_write_stub("common/FileSystem.h"
+"#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <string>
+#include <string_view>
+
+class Error;
+
+namespace FileSystem {
+
+inline std::FILE* OpenCFile(const char* path, const char* mode, Error* = nullptr) noexcept {
+	return std::fopen(path, mode);
+}
+
+inline int64_t FSeek64(std::FILE* fp, int64_t offset, int origin) noexcept {
+	return std::fseek(fp, static_cast<long>(offset), origin);
+}
+
+inline int64_t FTell64(std::FILE* fp) noexcept {
+	return std::ftell(fp);
+}
+
+inline bool DirectoryExists(const char*) noexcept { return false; }
+inline bool FileExists(const char*) noexcept { return false; }
+
+} // namespace FileSystem
+")
+
+	pcsx2_ax_write_stub("common/Path.h"
+"#pragma once
+#include <filesystem>
+#include <string>
+#include <string_view>
+
+namespace Path {
+
+inline std::string Combine(std::string_view lhs, std::string_view rhs) {
+	return (std::filesystem::path(lhs) / std::filesystem::path(rhs)).string();
+}
+
+inline std::string_view GetFileName(std::string_view path) noexcept {
+	const auto pos = path.find_last_of(\"/\\\\\");
+	return pos == std::string_view::npos ? path : path.substr(pos + 1);
+}
+
+inline std::string ReplaceExtension(std::string_view path, std::string_view ext) {
+	std::filesystem::path p(path);
+	p.replace_extension(ext);
+	return p.string();
+}
+
+} // namespace Path
 ")
 
 	pcsx2_ax_write_stub("CDVD/CDVDcommon.h"
@@ -554,6 +703,8 @@ inline ConsoleStream DbgCon{};
 #define WARNING_LOG(...) do { Console.Warning(__VA_ARGS__); } while (0)
 #define INFO_LOG(...) do { Console.WriteLn(__VA_ARGS__); } while (0)
 #define DEV_LOG(...) do { DevCon.WriteLn(__VA_ARGS__); } while (0)
+#define GUNIT_WARN(...) do { Console.Warning(__VA_ARGS__); } while (0)
+#define GUNIT_LOG(...) do { DevCon.WriteLn(__VA_ARGS__); } while (0)
 #define pxAssert(expr) do { (void)sizeof(expr); } while (0)
 #define pxAssertMsg(expr, msg) do { (void)sizeof(expr); (void)sizeof(msg); } while (0)
 #define pxAssertRel(expr, msg) do { (void)sizeof(expr); (void)sizeof(msg); } while (0)
