@@ -2,18 +2,19 @@ cmake_minimum_required(VERSION 3.22)
 
 project(pcsx2_ax
     VERSION 0.1.0
-    DESCRIPTION "PCSX2_AX shared core and mode adapters (planning phase)"
+    DESCRIPTION "PCSX2_AX shared core and mode adapters (prototype foundation)"
     LANGUAGES C CXX
 )
 
-option(PCSX2_AX_PLANNING_ONLY "Keep PCSX2_AX locked to planning/prototype stage" ON)
+option(PCSX2_AX_PLANNING_ONLY "Keep PCSX2_AX in planning/prototype guardrails" ON)
 option(PCSX2_AX_ENABLE_VULKAN_1_3 "Enable Vulkan 1.3 GS offload hooks" ON)
+option(PCSX2_AX_BUILD_HARNESS "Build minimal CLI prototype harness" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Locate ax-sdk v1_36_2 (either in-tree under Generation-X-AX or via AX_SDK_DIR)
+# Locate ax-sdk v1_36_2 (in-tree under Generation-X-AX or via AX_SDK_DIR)
 if(TARGET ax_sdk)
     set(PCSX2_AX_SDK_TARGET ax_sdk)
 elseif(DEFINED AX_SDK_DIR AND EXISTS "${AX_SDK_DIR}/CMakeLists.txt")
@@ -22,6 +23,8 @@ elseif(DEFINED AX_SDK_DIR AND EXISTS "${AX_SDK_DIR}/CMakeLists.txt")
 elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../ax-sdk/CMakeLists.txt")
     add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../ax-sdk" "${CMAKE_CURRENT_BINARY_DIR}/ax_sdk_build" EXCLUDE_FROM_ALL)
     set(PCSX2_AX_SDK_TARGET ax_sdk)
+else()
+    message(WARNING "ax-sdk (v1_36_2) target not found; building standalone prototype stubs only.")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -82,17 +85,19 @@ target_compile_definitions(ax_pcsx2_core
         $<$<BOOL:${PCSX2_AX_ENABLE_VULKAN_1_3}>:PCSX2_AX_HAS_VULKAN_1_3=1>
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+if(UNIX AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(ax_pcsx2_core PRIVATE
         -O2
         -Wall
         -Wextra
         -Wpedantic
-        $<$<AND:$<STREQUAL:${CMAKE_SYSTEM_PROCESSOR},x86_64>,$<BOOL:${UNIX}>>:-march=skylake>
+        $<$<STREQUAL:${CMAKE_SYSTEM_PROCESSOR},x86_64>:-march=skylake>
     )
+elseif(MSVC)
+    target_compile_options(ax_pcsx2_core PRIVATE /O2 /W4)
 endif()
 
-if(TARGET ${PCSX2_AX_SDK_TARGET})
+if(DEFINED PCSX2_AX_SDK_TARGET AND TARGET ${PCSX2_AX_SDK_TARGET})
     target_link_libraries(ax_pcsx2_core PUBLIC ${PCSX2_AX_SDK_TARGET})
 endif()
 
@@ -170,3 +175,17 @@ target_link_libraries(ax_pcsx2_adapter_coh_h
     PUBLIC
         PCSX2_AX::core
 )
+
+# ---------------------------------------------------------------------------
+# 4. Minimal CLI Prototype Harness
+# ---------------------------------------------------------------------------
+if(PCSX2_AX_BUILD_HARNESS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pcsx2_ax_harness.cpp")
+    add_executable(pcsx2_ax_harness
+        "${CMAKE_CURRENT_SOURCE_DIR}/pcsx2_ax_harness.cpp"
+    )
+    target_link_libraries(pcsx2_ax_harness
+        PRIVATE
+            PCSX2_AX::ps2
+            PCSX2_AX::coh_h
+    )
+endif()
