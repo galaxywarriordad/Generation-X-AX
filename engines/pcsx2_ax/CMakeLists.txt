@@ -9,11 +9,42 @@ project(pcsx2_ax
 option(PCSX2_AX_PLANNING_ONLY "Keep PCSX2_AX in Prototype Phase guardrails" ON)
 option(PCSX2_AX_ENABLE_VULKAN_1_3 "Enable Vulkan 1.3 GS offload hooks" ON)
 option(PCSX2_AX_BUILD_HARNESS "Build CLI prototype harness" ON)
+option(PCSX2_AX_ENABLE_LTO "Enable ThinLTO / LTO when supported" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ---------------------------------------------------------------------------
+# 0. Shared Compiler Options & Prototype Include Fallbacks
+# ---------------------------------------------------------------------------
+add_library(pcsx2_ax_compile_options INTERFACE)
+
+target_compile_features(pcsx2_ax_compile_options INTERFACE cxx_std_20)
+
+if(UNIX AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(pcsx2_ax_compile_options INTERFACE
+        -O2
+        -Wall
+        -Wextra
+        -Wpedantic
+        $<$<STREQUAL:${CMAKE_SYSTEM_PROCESSOR},x86_64>:-march=skylake>
+    )
+elseif(MSVC)
+    target_compile_options(pcsx2_ax_compile_options INTERFACE /O2 /W4 /permissive-)
+endif()
+
+if(PCSX2_AX_ENABLE_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
+    if(ipo_supported)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+    else()
+        message(STATUS "IPO/ThinLTO requested but not supported by active toolchain: ${ipo_error}")
+    endif()
+endif()
 
 # Locate ax-sdk v1_36_2 (in-tree under Generation-X-AX or via AX_SDK_DIR)
 if(TARGET ax_sdk)
@@ -28,11 +59,113 @@ else()
     message(WARNING "ax-sdk (v1_36_2) target not found; building standalone prototype stubs only.")
 endif()
 
+set(PCSX2_AX_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/core")
+set(PCSX2_AX_PROTO_INC_DIR "${CMAKE_CURRENT_BINARY_DIR}/proto_inc")
+
+if(PCSX2_AX_PLANNING_ONLY)
+    file(MAKE_DIRECTORY "${PCSX2_AX_PROTO_INC_DIR}/CDVD")
+    file(MAKE_DIRECTORY "${PCSX2_AX_PROTO_INC_DIR}/common")
+
+    if(NOT EXISTS "${PCSX2_AX_CORE_DIR}/Counters.h")
+        file(WRITE "${PCSX2_AX_PROTO_INC_DIR}/Counters.h"
+"#pragma once
+#include <cstdint>
+inline uint64_t EEsCycle = 0;
+inline uint64_t EEoCycle = 0;
+inline uint64_t nextDeltaCounter = 0;
+inline uint64_t nextStartCounter = 0;
+inline uint64_t psxNextStartCounter = 0;
+inline uint64_t psxNextDeltaCounter = 0;
+inline bool rcntFreeze() { return true; }
+inline bool psxRcntFreeze() { return true; }
+inline void intUpdateCPUCycles() {}
+inline void intEventTest() {}
+inline void UpdateVSyncRate(bool) {}
+inline double GetVerticalFrequency() { return 59.94; }
+")
+    endif()
+
+    if(NOT EXISTS "${PCSX2_AX_CORE_DIR}/CDVD/CDVDcommon.h")
+        file(WRITE "${PCSX2_AX_PROTO_INC_DIR}/CDVD/CDVDcommon.h"
+"#pragma once
+#include <cstdint>
+using u8 = uint8_t;
+using u16 = uint16_t;
+using u32 = uint32_t;
+using u64 = uint64_t;
+using s8 = int8_t;
+using s16 = int16_t;
+using s32 = int32_t;
+using s64 = int64_t;
+using uint = unsigned int;
+
+enum CdvdDiscType {
+    CDVD_TYPE_NODISC = 0x00,
+    CDVD_TYPE_DETCTDVDS = 0x10,
+    CDVD_TYPE_DETCTDVDD = 0x11,
+    CDVD_TYPE_DETCTCD = 0x12,
+    CDVD_TYPE_DETCT = 0x13,
+    CDVD_TYPE_PS2DVD = 0x14,
+    CDVD_TYPE_DVDV = 0xFE,
+};
+
+enum CdvdTrayStatus {
+    CDVD_TRAY_CLOSE = 0,
+    CDVD_TRAY_OPEN = 1,
+};
+
+enum CdvdReadMode {
+    CDVD_MODE_2048 = 0,
+    CDVD_MODE_2328 = 1,
+    CDVD_MODE_2340 = 2,
+    CDVD_MODE_2352 = 3,
+    CDVD_MODE_2368 = 4,
+};
+
+enum CdvdTrackType {
+    CDVD_AUDIO_TRACK = 0,
+    CDVD_MODE1_TRACK = 1,
+    CDVD_MODE2_TRACK = 2,
+};
+
+struct cdvdTN { u8 strack = 1; u8 etrack = 1; };
+struct cdvdTD { u32 lsn = 0; u8 type = 0; };
+struct cdvdSubQ {
+    u8 ctrl = 0, adr = 0, trackNum = 0, trackIndex = 0;
+    u8 trackM = 0, trackS = 0, trackF = 0, pad = 0;
+    u8 discM = 0, discS = 0, discF = 0;
+};
+struct cdvdTrack { u32 start_lba = 0; u8 type = 0; };
+struct ProgressCallback {};
+
+struct CDVD_API {
+    void (*close)();
+    bool (*open)(const char*, void*);
+    bool (*precache)(ProgressCallback*, void*);
+    int32_t (*readTrack)(u32, int);
+    int32_t (*getBuffer)(u8*);
+    int32_t (*readSubQ)(u32, cdvdSubQ*);
+    int32_t (*getTN)(cdvdTN*);
+    int32_t (*getTD)(u8, cdvdTD*);
+    int32_t (*getTOC)(void*);
+    int32_t (*getDiskType)();
+    int32_t (*getTrayStatus)();
+    int32_t (*ctrlTrayOpen)();
+    int32_t (*ctrlTrayClose)();
+    void (*newDiskCB)(void (*)());
+    int32_t (*readSector)(u8*, u32, int);
+    int32_t (*getDualInfo)(s32*, u32*);
+};
+
+extern const CDVD_API* CDVD;
+extern u32 g_last_sector_block_lsn;
+")
+    endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # 1. Shared Deduplicated Core: libax_pcsx2_core (engines/pcsx2_ax/core)
 # ---------------------------------------------------------------------------
-set(PCSX2_AX_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/core")
-
 set(PCSX2_AX_CORE_HEADERS
     "${PCSX2_AX_CORE_DIR}/CDVDRingSlab.hpp"
     "${PCSX2_AX_CORE_DIR}/IHardwareModeAdapter.hpp"
@@ -77,15 +210,16 @@ set(PCSX2_AX_CORE_SOURCES
 
 add_library(ax_pcsx2_core STATIC ${PCSX2_AX_CORE_SOURCES} ${PCSX2_AX_CORE_HEADERS})
 add_library(PCSX2_AX::core ALIAS ax_pcsx2_core)
-set_target_properties(ax_pcsx2_core PROPERTIES OUTPUT_NAME "ax_pcsx2_core")
+set_target_properties(ax_pcsx2_core PROPERTIES
+    OUTPUT_NAME "ax_pcsx2_core"
+    CXX_VISIBILITY_PRESET hidden
+)
 
 target_include_directories(ax_pcsx2_core
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${PCSX2_AX_CORE_DIR}"
-        "${PCSX2_AX_CORE_DIR}/pcsx2"
-        "${PCSX2_AX_CORE_DIR}/common"
-        "${PCSX2_AX_CORE_DIR}/CDVD"
+        $<$<BOOL:${PCSX2_AX_PLANNING_ONLY}>:${PCSX2_AX_PROTO_INC_DIR}>
 )
 
 target_compile_definitions(ax_pcsx2_core
@@ -98,17 +232,10 @@ target_compile_definitions(ax_pcsx2_core
         $<$<BOOL:${PCSX2_AX_ENABLE_VULKAN_1_3}>:PCSX2_AX_HAS_VULKAN_1_3=1>
 )
 
-if(UNIX AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(ax_pcsx2_core PRIVATE
-        -O2
-        -Wall
-        -Wextra
-        -Wpedantic
-        $<$<STREQUAL:${CMAKE_SYSTEM_PROCESSOR},x86_64>:-march=skylake>
-    )
-elseif(MSVC)
-    target_compile_options(ax_pcsx2_core PRIVATE /O2 /W4)
-endif()
+target_link_libraries(ax_pcsx2_core
+    PUBLIC
+        pcsx2_ax_compile_options
+)
 
 if(DEFINED PCSX2_AX_SDK_TARGET AND TARGET ${PCSX2_AX_SDK_TARGET})
     target_link_libraries(ax_pcsx2_core PUBLIC ${PCSX2_AX_SDK_TARGET})
@@ -137,6 +264,7 @@ set(PCSX2_AX_PS2_SOURCES
 
 add_library(ax_pcsx2_adapter_ps2 STATIC ${PCSX2_AX_PS2_SOURCES})
 add_library(PCSX2_AX::ps2 ALIAS ax_pcsx2_adapter_ps2)
+set_target_properties(ax_pcsx2_adapter_ps2 PROPERTIES CXX_VISIBILITY_PRESET hidden)
 
 target_include_directories(ax_pcsx2_adapter_ps2
     PUBLIC
@@ -151,6 +279,7 @@ target_compile_definitions(ax_pcsx2_adapter_ps2
 target_link_libraries(ax_pcsx2_adapter_ps2
     PUBLIC
         PCSX2_AX::core
+        pcsx2_ax_compile_options
 )
 
 # ---------------------------------------------------------------------------
@@ -173,6 +302,7 @@ set(PCSX2_AX_COHH_SOURCES
 
 add_library(ax_pcsx2_adapter_coh_h STATIC ${PCSX2_AX_COHH_SOURCES})
 add_library(PCSX2_AX::coh_h ALIAS ax_pcsx2_adapter_coh_h)
+set_target_properties(ax_pcsx2_adapter_coh_h PROPERTIES CXX_VISIBILITY_PRESET hidden)
 
 target_include_directories(ax_pcsx2_adapter_coh_h
     PUBLIC
@@ -187,6 +317,7 @@ target_compile_definitions(ax_pcsx2_adapter_coh_h
 target_link_libraries(ax_pcsx2_adapter_coh_h
     PUBLIC
         PCSX2_AX::core
+        pcsx2_ax_compile_options
 )
 
 # ---------------------------------------------------------------------------
@@ -196,9 +327,11 @@ if(PCSX2_AX_BUILD_HARNESS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pcsx2_ax_harne
     add_executable(pcsx2_ax_harness
         "${CMAKE_CURRENT_SOURCE_DIR}/pcsx2_ax_harness.cpp"
     )
+    set_target_properties(pcsx2_ax_harness PROPERTIES CXX_VISIBILITY_PRESET hidden)
     target_link_libraries(pcsx2_ax_harness
         PRIVATE
             PCSX2_AX::ps2
             PCSX2_AX::coh_h
+            pcsx2_ax_compile_options
     )
 endif()
