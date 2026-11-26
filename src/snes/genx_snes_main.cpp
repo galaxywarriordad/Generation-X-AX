@@ -1,4 +1,5 @@
 #include "snes/ax_snes_adapter.hpp"
+#include "snes/snes_core_host.hpp"
 #include "ui/ax_input_binder.hpp"
 #include "ui/ax_retro_chrome.hpp"
 #include "ui/ax_retro_font.hpp"
@@ -140,17 +141,18 @@ int main(int argc, char** argv) {
 
     // Preallocated stereo frame buffer for non-Core-0 DSP stage (Cores 2-4)
     std::array<float, 96 * 2> stereo_frames{};
+    adapter.ProcessAudioFilterStereo(stereo_frames.data(), 96);
 
-    while (!g_stop_flag) {
-        adapter.core_host().RunFrame();
-        adapter.ProcessAudioFilterStereo(stereo_frames.data(), 96);
-        const int ppm = adapter.ComputeRateGuardPpm(50);
-        (void)ppm;
-        break;
-    }
+    // RunSnesCoreLoop drives LoadCartridge, StepFrame, RateGuardPpm, RecordFrameTelemetry,
+    // and UnloadCartridge until g_stop_flag is set (SIGINT / SIGTERM / SIGUSR1).
+    const bool loop_ok = ax::genx::snes::RunSnesCoreLoop(
+        adapter,
+        adapter.staged_rom_path(),
+        adapter.staged_sram_path(),
+        &g_stop_flag);
 
-    if (!adapter.ShutdownSession()) {
-        std::cerr << "[genx-snes-ax] Save flush or DAC lock release warning\n";
+    if (!adapter.ShutdownSession() || !loop_ok) {
+        std::cerr << "[genx-snes-ax] Session loop or save/DAC shutdown warning\n";
         return 1;
     }
 
