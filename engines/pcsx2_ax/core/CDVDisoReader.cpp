@@ -1,215 +1,122 @@
 // SPDX-FileCopyrightText: 2026 The Silicon Preservation Society (galaxywarriordad)
-
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-
-
 #include "CDVDRingSlab.hpp"
+#include "IHardwareModeAdapter.hpp"
 
-#include "CDVDcommon.h"
-
-
-
+#include <algorithm>
 #include <atomic>
-
 #include <cstdint>
-
 #include <cstring>
-
 #include <span>
-
-#include <thread>
-
-
-
-#if __has_include(<ax/topology/pinning.hpp>)
-
-#include <ax/topology/pinning.hpp>
-
-#define PCSX2_AX_HAS_AX_TOPOLOGY 1
-
-#else
-
-#define PCSX2_AX_HAS_AX_TOPOLOGY 0
-
-#endif
-
-
 
 namespace pcsx2_ax::cdvd {
 
-
-
-class CdvdStreamController {
-
+class ZeroCopyIsoReader {
 public:
+	static constexpr std::size_t kPrefetchBurstSectors = 16u;
 
-[[nodiscard]] bool start(ZeroCopyIsoReader* reader) noexcept {
+	ZeroCopyIsoReader() noexcept = default;
+	~ZeroCopyIsoReader() noexcept { shutdown(); }
 
-reader_ = reader;
+	ZeroCopyIsoReader(const ZeroCopyIsoReader&)            = delete;
+	ZeroCopyIsoReader& operator=(const ZeroCopyIsoReader&) = delete;
 
-running_.store(true, std::memory_order_release);
+	[[nodiscard]] bool init(pcsx2_ax::core::IHardwareModeAdapter* adapter,
+	                        uint32_t total_sectors = 0u) noexcept {
+		shutdown();
+		if (!ring_.init())
+			return false;
+		adapter_.store(adapter, std::memory_order_release);
+		total_sectors_.store(total_sectors, std::memory_order_release);
+		next_read_lba_.store(0u, std::memory_order_release);
+		seek_target_lba_.store(0u, std::memory_order_release);
+		seek_pending_.store(false, std::memory_order_release);
+		return true;
+	}
 
-worker_quiesced_.store(false, std::memory_order_relaxed);
+	void shutdown() noexcept {
+		seek_pending_.store(false, std::memory_order_release);
+		ring_.wake_signal().notify_all();
+		ring_.shutdown();
+	}
 
-worker_ = std::thread([this]() noexcept { worker_loop(); });
+	void set_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter, uint32_t total_sectors) noexcept {
+		adapter_.store(adapter, std::memory_order_release);
+		total_sectors_.store(total_sectors, std::memory_order_release);
+	}
 
-return true;
+	[[nodiscard]] const SectorSlot* peek_sector() const noexcept {
+		return ring_.peek_read_slot();
+	}
 
-}
+	void consume_sector() noexcept {
+		ring_.release_read_slot();
+	}
 
+	void request_seek(uint32_t target_lba, const std::atomic<bool>& worker_quiesced) noexcept {
+		seek_target_lba_.store(target_lba, std::memory_order_release);
+		seek_pending_.store(true, std::memory_order_release);
+		ring_.wake_signal().notify();
 
+		while (seek_pending_.load(std::memory_order_acquire) &&
+		       !worker_quiesced.load(std::memory_order_acquire)) {
+			ring_.wake_signal().wait_once();
+		}
 
-void stop() noexcept {
+		ring_.reset_indices();
+		next_read_lba_.store(target_lba, std::memory_order_release);
+		seek_pending_.store(false, std::memory_order_release);
+		ring_.wake_signal().notify();
+	}
 
-running_.store(false, std::memory_order_release);
+	[[nodiscard]] bool seek_pending() const noexcept {
+		return seek_pending_.load(std::memory_order_acquire);
+	}
 
-if (worker_.joinable()) {
+	[[nodiscard]] bool needs_readahead() const noexcept {
+		return ring_.needs_readahead();
+	}
 
-worker_.join();
+	[[nodiscard]] std::size_t prefetch_burst() noexcept {
+		auto* adp = adapter_.load(std::memory_order_acquire);
+		const uint32_t total = total_sectors_.load(std::memory_order_acquire);
+		uint32_t lba = next_read_lba_.load(std::memory_order_acquire);
+		if (adp == nullptr || total == 0u || lba >= total)
+			return 0u;
 
-}
+		std::size_t produced = 0u;
+		const std::size_t max_burst = std::min<std::size_t>(kPrefetchBurstSectors, ring_.free_slots());
+		for (std::size_t i = 0u; i < max_burst && lba < total; ++i, ++lba) {
+			SectorSlot* slot = ring_.acquire_write_slot();
+			if (slot == nullptr)
+				break;
 
-}
+			uint16_t sector_bytes = 2048u;
+			std::span<uint8_t> dst = slot->writable_span(kMaxRawSectorBytes);
+			const bool ok = adp->read_media_sectors(lba, 1u, dst, sector_bytes);
+			slot->lba = lba;
+			slot->sector_bytes = (sector_bytes > 0u) ? sector_bytes : 2048u;
+			slot->status = ok ? ReadStatus::Ok : ReadStatus::IoError;
+			ring_.publish_write_slot();
+			++produced;
+			if (!ok)
+				break;
+		}
 
+		next_read_lba_.store(lba, std::memory_order_release);
+		return produced;
+	}
 
-
-// Called on the EE/IOP emulation core to fulfill a sequential or seeked DMA read.
-
-// Transfers directly from locked HugeTLB SectorSlot into IOP destination buffer.
-
-[[nodiscard]] bool read_sectors_to_iop(uint32_t start_lba,
-
-uint32_t sector_count,
-
-uint8_t* iop_dst_ptr,
-
-std::size_t stride_bytes) noexcept {
-
-for (uint32_t i = 0; i < sector_count; ++i) {
-
-const uint32_t target_lba = start_lba + i;
-
-
-
-const SectorSlot* slot = reader_->peek_sector();
-
-if (slot == nullptr || slot->lba != target_lba) {
-
-// Cache miss or non-sequential jump: realign ring to target_lba
-
-reader_->request_seek(target_lba, worker_quiesced_);
-
-while ((slot = reader_->peek_sector()) == nullptr) {
-
-if (!running_.load(std::memory_order_acquire)) {
-
-return false;
-
-}
-
-}
-
-}
-
-
-
-if (slot->status != ReadStatus::Ok) {
-
-reader_->consume_sector();
-
-return false;
-
-}
-
-
-
-const std::span<const uint8_t> src = slot->readable_span();
-
-const std::size_t copy_bytes = (src.size() < stride_bytes) ? src.size() : stride_bytes;
-
-std::memcpy(iop_dst_ptr + (static_cast<std::size_t>(i) * stride_bytes),
-
-src.data(),
-
-copy_bytes);
-
-
-
-reader_->consume_sector();
-
-}
-
-return true;
-
-}
-
-
+	[[nodiscard]] CdvdSpscRing<kDefaultRingSlots>& ring() noexcept { return ring_; }
 
 private:
-
-void worker_loop() noexcept {
-
-#if PCSX2_AX_HAS_AX_TOPOLOGY
-
-// Enforce ax-sdk v1_36_2 2:3:1 isolation: keep background I/O off EE/VU1/GS cores
-
-ax::topology::pin_to_housekeeping_core5();
-
-#endif
-
-
-
-while (running_.load(std::memory_order_acquire)) {
-
-if (reader_->seek_pending()) {
-
-worker_quiesced_.store(true, std::memory_order_release);
-
-while (reader_->seek_pending() && running_.load(std::memory_order_acquire)) {
-
-// Wait for consumer seek reset to complete
-
-}
-
-worker_quiesced_.store(false, std::memory_order_release);
-
-continue;
-
-}
-
-
-
-if (reader_->needs_readahead()) {
-
-(void)reader_->prefetch_burst();
-
-} else {
-
-// Ring is >50% full; yield briefly without burning Core 5
-
-std::this_thread::yield();
-
-}
-
-}
-
-worker_quiesced_.store(true, std::memory_order_release);
-
-}
-
-
-
-ZeroCopyIsoReader* reader_{nullptr};
-
-std::thread worker_{};
-
-std::atomic<bool> running_{false};
-
-std::atomic<bool> worker_quiesced_{true};
-
+	CdvdSpscRing<kDefaultRingSlots> ring_{};
+	std::atomic<pcsx2_ax::core::IHardwareModeAdapter*> adapter_{nullptr};
+	alignas(kCacheLineBytes) std::atomic<uint32_t> total_sectors_{0u};
+	alignas(kCacheLineBytes) std::atomic<uint32_t> next_read_lba_{0u};
+	alignas(kCacheLineBytes) std::atomic<uint32_t> seek_target_lba_{0u};
+	alignas(kCacheLineBytes) std::atomic<bool> seek_pending_{false};
 };
-
-
 
 } // namespace pcsx2_ax::cdvd
