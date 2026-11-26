@@ -342,7 +342,7 @@ inline void GSgetInternalResolution(int* width, int* height) noexcept {
 	if (height) *height = 480;
 }
 inline int GSgetDisplayMode() noexcept { return 0; }
-inline double GetVerticalFrequency() noexcept { return 59.94; }
+inline double GetVerticalFrequency() { return 59.94; }
 inline float GSGetHostRefreshRate() noexcept { return 60.0f; }
 
 namespace MTGS {
@@ -367,6 +367,28 @@ inline DummyThreadHandle& GetThreadHandle() noexcept {
 #define ICON_FA_FLOPPY_DISK \"\"
 #define ICON_FA_FOLDER_OPEN \"\"
 #define ICON_FA_TRIANGLE_EXCLAMATION \"\"
+")
+
+	pcsx2_ax_write_stub("common/Pcsx2Defs.h"
+"#pragma once
+#include <cstddef>
+#include <cstdint>
+#include \"Common.h\"
+
+#if defined(_MSC_VER)
+#define PCSX2_EXPORT_API __declspec(dllexport)
+#elif defined(__GNUC__) || defined(__clang__)
+#define PCSX2_EXPORT_API __attribute__((visibility(\"default\")))
+#else
+#define PCSX2_EXPORT_API
+#endif
+
+static constexpr size_t HOST_PAGE_SIZE = 4096;
+")
+
+	pcsx2_ax_write_stub("common/Assertions.h"
+"#pragma once
+#include \"common/Console.h\"
 ")
 
 	pcsx2_ax_write_stub("CDVD/CDVDcommon.h"
