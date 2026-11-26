@@ -2,17 +2,18 @@ cmake_minimum_required(VERSION 3.22)
 
 project(pcsx2_ax
     VERSION 0.1.0
-    DESCRIPTION "PCSX2_AX shared core and mode adapters (prototype foundation)"
+    DESCRIPTION "PCSX2_AX shared core and mode adapters (Prototype Phase)"
     LANGUAGES C CXX
 )
 
-option(PCSX2_AX_PLANNING_ONLY "Keep PCSX2_AX in planning/prototype guardrails" ON)
+option(PCSX2_AX_PLANNING_ONLY "Keep PCSX2_AX in Prototype Phase guardrails" ON)
 option(PCSX2_AX_ENABLE_VULKAN_1_3 "Enable Vulkan 1.3 GS offload hooks" ON)
-option(PCSX2_AX_BUILD_HARNESS "Build minimal CLI prototype harness" ON)
+option(PCSX2_AX_BUILD_HARNESS "Build CLI prototype harness" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # Locate ax-sdk v1_36_2 (in-tree under Generation-X-AX or via AX_SDK_DIR)
 if(TARGET ax_sdk)
@@ -31,6 +32,12 @@ endif()
 # 1. Shared Deduplicated Core: libax_pcsx2_core (engines/pcsx2_ax/core)
 # ---------------------------------------------------------------------------
 set(PCSX2_AX_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/core")
+
+set(PCSX2_AX_CORE_HEADERS
+    "${PCSX2_AX_CORE_DIR}/CDVDRingSlab.hpp"
+    "${PCSX2_AX_CORE_DIR}/IHardwareModeAdapter.hpp"
+    "${PCSX2_AX_CORE_DIR}/VMManager_Internal.h"
+)
 
 set(PCSX2_AX_CORE_SOURCES
     "${PCSX2_AX_CORE_DIR}/CDVDcommon.cpp"
@@ -68,7 +75,7 @@ set(PCSX2_AX_CORE_SOURCES
     "${PCSX2_AX_CORE_DIR}/vtlb.cpp"
 )
 
-add_library(ax_pcsx2_core STATIC ${PCSX2_AX_CORE_SOURCES})
+add_library(ax_pcsx2_core STATIC ${PCSX2_AX_CORE_SOURCES} ${PCSX2_AX_CORE_HEADERS})
 add_library(PCSX2_AX::core ALIAS ax_pcsx2_core)
 set_target_properties(ax_pcsx2_core PROPERTIES OUTPUT_NAME "ax_pcsx2_core")
 
