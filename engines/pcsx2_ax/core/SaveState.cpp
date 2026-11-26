@@ -62,24 +62,6 @@ namespace pcsx2_ax::savestate_bridge {
 
 namespace {
 
-inline pcsx2_ax::core::IHardwareModeAdapter*& active_adapter() noexcept
-{
-	static pcsx2_ax::core::IHardwareModeAdapter* adapter = nullptr;
-	return adapter;
-}
-
-inline uint32_t& active_bios_crc() noexcept
-{
-	static uint32_t crc = 0u;
-	return crc;
-}
-
-inline std::string& active_bios_desc()
-{
-	static std::string desc = "PS2/COH-H Runtime";
-	return desc;
-}
-
 // Reusable save staging buffer to avoid repeated 64 MiB heap allocations
 class SaveScratchArena {
 public:
@@ -101,6 +83,21 @@ inline SaveScratchArena& scratch_arena()
 {
 	static SaveScratchArena arena{};
 	return arena;
+}
+
+[[nodiscard]] inline uint32_t resolve_bios_crc(
+	const pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context()) noexcept
+{
+	return pcsx2_ax::vm_bridge::current_snapshot(ctx).bios.bios_crc;
+}
+
+[[nodiscard]] inline std::string resolve_bios_desc(
+	const pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context())
+{
+	const auto snap = pcsx2_ax::vm_bridge::current_snapshot(ctx);
+	if (!snap.bios.region_code.empty())
+		return std::string(snap.bios.region_code);
+	return (snap.mode == pcsx2_ax::core::HardwareMode::CohHArcade) ? "COH-H" : "PS2";
 }
 
 [[nodiscard]] bool sync_file_and_parent(const std::filesystem::path& target_path) noexcept
@@ -131,6 +128,70 @@ inline SaveScratchArena& scratch_arena()
 }
 
 } // namespace
+
+void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter,
+                       pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context()) noexcept
+{
+	pcsx2_ax::vm_bridge::bind_mode_adapter(adapter, ctx);
+}
+
+[[nodiscard]] bool freeze_sio2_state(StateWrapper& sw,
+                                     pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context())
+{
+	if (auto* adapter = pcsx2_ax::vm_bridge::get_mode_adapter(ctx); adapter != nullptr)
+		return adapter->freeze_state(sw);
+	return true;
+}
+
+[[nodiscard]] bool freeze_pad_state(StateWrapper& sw)
+{
+	// Adapter freeze_state runs once per freeze pass via freeze_sio2_state.
+	(void)sw;
+	return true;
+}
+
+[[nodiscard]] bool commit_file_atomically(const char* final_filename,
+                                          Error* error,
+                                          uint64_t expected_epoch = 0u,
+                                          const pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context())
+{
+	if (final_filename == nullptr || final_filename[0] == '\0')
+		return false;
+
+	std::error_code ec;
+	const std::filesystem::path dest_path(final_filename);
+	const std::filesystem::path tmp_path =
+		dest_path.parent_path() / (dest_path.filename().string() + ".tmp");
+
+	if (!std::filesystem::exists(tmp_path, ec))
+		return true;
+
+	if (expected_epoch != 0u && pcsx2_ax::vm_bridge::current_epoch(ctx) != expected_epoch)
+	{
+		std::filesystem::remove(tmp_path, ec);
+		Error::SetStringFmt(error, "Discarded stale save state '{}' due to epoch change", dest_path.string());
+		return false;
+	}
+
+	if (!sync_file_and_parent(tmp_path))
+	{
+		Error::SetStringFmt(error, "Failed fsync on temporary save state '{}'", tmp_path.string());
+		return false;
+	}
+
+	std::filesystem::rename(tmp_path, dest_path, ec);
+	if (ec)
+	{
+		std::filesystem::remove(tmp_path, ec);
+		Error::SetStringFmt(error, "Atomic rename failed for '{}': {}", dest_path.string(), ec.message());
+		return false;
+	}
+
+	(void)sync_file_and_parent(dest_path);
+	return true;
+}
+
+} // namespace pcsx2_ax::savestate_bridge
 
 void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter) noexcept
 {
