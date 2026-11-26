@@ -27,12 +27,12 @@ Our unified engine layout under `engines/pcsx2_ax/` in `Generation-X-AX` stages 
 
 | Staged Target / Subdirectory | Identified Code Section & Role | Shared Core vs. Adapter Placement |
 | :---- | :---- | :---- |
-| `engines/pcsx2_ax/core/``ax_pcsx2_core` (48 files) | `IHardwareModeAdapter.hpp` (mode concepts, `HardwareModeAdapterConcept`, `ModeEpochSnapshot`, `FrameTelemetrySample`), `VmContext`, `VMManager_Internal.h`, split `VMManager.cpp` / `VMManager_Media.cpp` / `VMManager_SaveState.cpp` / `VMManager_Config.cpp`, epoch-checked `SaveState.cpp`, lock-free ring slab `CDVDRingSlab.hpp` (with `HugeTlbSlab` & `eventfd`/`WaitOnAddress` `WakeSignal`), `CDVDisoReader.cpp`, `CDVDdiscThread.cpp`, and `EMU_THREAD_STACK_SIZE = 2 * 1024 * 1024` | **Shared Core (`libax_pcsx2_core`)** — owns VM lifecycle, `2 MB` recompiler thread stack budget, and `AVX2` early check; thin adapters supply mode-specific `VMBootParameters`, game/arcade config paths, and persistence hooks |
+| `engines/pcsx2_ax/core/``ax_pcsx2_core` (48 files) | `IHardwareModeAdapter.hpp` (mode concepts, `HardwareModeAdapterConcept`, `ModeEpochSnapshot`, `FrameTelemetrySample`), `VmContext`, `VMManager_Internal.h`, split `VMManager.cpp` / `VMManager_Media.cpp` / `VMManager_SaveState.cpp` / `VMManager_Config.cpp`, epoch-checked `SaveState.cpp`, lock-free ring slab `CDVDRingSlab.hpp` (with `HugeTlbSlab` & `eventfd`/`WaitOnAddressWakeSignal`), `CDVDisoReader.cpp`, `CDVDdiscThread.cpp`, and `EMU_THREAD_STACK_SIZE = 2 * 1024 * 1024` | **Shared Core (libax\_pcsx2\_core)** — owns VM lifecycle, `2 MB` recompiler thread stack budget, and `AVX2` early check; thin adapters supply mode-specific `VMBootParameters`, game/arcade config paths, and persistence hooks |
 | `engines/pcsx2_ax/adapters/ps2/``ax_pcsx2_adapter_ps2` (26 files) | `Ps2ConsoleAdapter.hpp` & implementation: thin mode adapter handling retail PS2 BIOS selection, `.iso` / `.chd` / `.zso` media mounting, DualShock controller bindings, memory cards, and save states under `/userdata/saves/ps2/` with zero core state duplication | **Thin PS2 Console Adapter Target** — compiles into `libax_pcsx2_adapter_ps2.a` and links with `ax_pcsx2_core` |
 | `engines/pcsx2_ax/adapters/coh_h/``ax_pcsx2_adapter_coh_h` (19 files) | `CohHArcadeAdapter.hpp`, `ACATA_IO_CHD.cpp`, and arcade board/dongle drivers: handling System 246 / 256 / Super 256 `COH-H` hardware profiles, `.acgame` configurations, `COH-H10020` security dongles, JVS arcade inputs, and atomic `ACSRAM`/NVRAM storage under `/userdata/saves/pcsx2x6/` | **Thin COH-H Arcade Adapter Target** — compiles into `libax_pcsx2_adapter_coh_h.a` and links with `ax_pcsx2_core` |
 | `engines/pcsx2_ax/pcsx2_ax_harness``pcsx2_ax_harness` (Executable Harness) | Unified appliance execution entry point: dispatches CLI arguments (`--mode ps2` vs. `--mode coh-h` / `--mode pcsx2x6`), initializes `VmContext`, enforces physical core pinning (`2:3:1`), locks `/run/lock/ax-dac.lock`, and runs the active `IHardwareModeAdapter` instance | **Unified Appliance Executable Target** — links shared core and both thin mode adapters into a single lean binary |
-| `pcsx2/Sif.h`, `Sif.cpp`, `Sif0.cpp`, `Sif1.cpp`, `sif2.cpp`, `Sifcmd.h`, `SPR.h`, `SPR.cpp`, `SourceLog.cpp`, `R5900OpcodeImpl.cpp` | `FIFO_SIF_W = 128`, `sifData`, `sifFifo` (`write`, `writeJunk` quadword/IOP-tag junk synthesis, `read`, `clear`), `sif_ee`, `sif_iop`, `t_sif_dma_transfer`, `dmaSPR0` / `dmaSPR1` / `SPRFROMinterrupt` / `SPRTOinterrupt`, `R5900` opcode implementations | **Shared Core (`libax_pcsx2_core`)** — provides EE/IOP SIF FIFO/DMA mechanics and `R5900` execution; thin adapters supply `COH-H` / System 246 & 256 board/dongle/media behavior where arcade hardware diverges |
-| `pcsx2/StateWrapper.h`, `StateWrapper.cpp`, `SaveState.cpp`, `SupportURLs.h` | `StateWrapper` (`Mode::Read`/`Write`, `IStream`, `ReadOnlyMemoryStream`, `MemoryStream`, `VectorMemoryStream`, C++20 constrained `Do<T>`, `DoPOD<T>`, `DoArray`, `DoPODArray`, `DoBytes`), `SaveState` serialization | **Shared Core (`libax_pcsx2_core`)** for stream serialization \+ **Adapter-enforced Atomic `SHARE` Persistence** (`tmp` \-\> `fsync` \-\> `mv` into `/userdata/saves/ps2/` vs. `/userdata/saves/pcsx2x6/`) |
+| `pcsx2/Sif.h`, `Sif.cpp`, `Sif0.cpp`, `Sif1.cpp`, `sif2.cpp`, `Sifcmd.h`, `SPR.h`, `SPR.cpp`, `SourceLog.cpp`, `R5900OpcodeImpl.cpp` | `FIFO_SIF_W = 128`, `sifData`, `sifFifo` (`write`, `writeJunk` quadword/IOP-tag junk synthesis, `read`, `clear`), `sif_ee`, `sif_iop`, `t_sif_dma_transfer`, `dmaSPR0` / `dmaSPR1` / `SPRFROMinterrupt` / `SPRTOinterrupt`, `R5900` opcode implementations | **Shared Core (libax\_pcsx2\_core)** — provides EE/IOP SIF FIFO/DMA mechanics and `R5900` execution; thin adapters supply `COH-H` / System 246 & 256 board/dongle/media behavior where arcade hardware diverges |
+| `pcsx2/StateWrapper.h`, `StateWrapper.cpp`, `SaveState.cpp`, `SupportURLs.h` | `StateWrapper` (`Mode::Read`/`Write`, `IStream`, `ReadOnlyMemoryStream`, `MemoryStream`, `VectorMemoryStream`, C++20 constrained `Do<T>`, `DoPOD<T>`, `DoArray`, `DoPODArray`, `DoBytes`), `SaveState` serialization | **Shared Core (libax\_pcsx2\_core)** for stream serialization \+ **Adapter-enforced Atomic SHARE Persistence** (`tmp` \-\> `fsync` \-\> `mv` into `/userdata/saves/ps2/` vs. `/userdata/saves/pcsx2x6/`) |
 | `pcsx2-gsrunner`, `cmake`, `common`, `tools` (`shader_to_cpp.py`, `merge_ws_ni_patches.py`, `texture_dump_alpha_scaler.py`, `generate_redump_yaml.py`, `generate_fullscreen_ui_translation_strings.py`, `retry.sh`) | Headless/runner execution (`pcsx2-gsrunner`), CMake build definitions (`cmake`), shared utilities (`common`), and offline build/asset/patch/Redump/translation helpers (`tools`) | **Shared Build & Offline Tooling** — `pcsx2-gsrunner` suits lean appliance execution without desktop GUI bloat; `tools/` scripts stay in offline build/asset prep and out of `rootfs.erofs` |
 
 ---
@@ -49,7 +49,7 @@ Our unified engine layout under `engines/pcsx2_ax/` in `Generation-X-AX` stages 
 
 During the initial bootstrap and CMake build verification stage, when `PCSX2_AX_PLANNING_ONLY=ON` is enabled, the build system generates minimal prototype header stubs in `${CMAKE_CURRENT_BINARY_DIR}/proto_inc` using `pcsx2_ax_write_stub` to satisfy core compilation prerequisites prior to full mode adapter hardware wiring. The inventory of generated prototype stubs includes:
 
-4. **Core System & Hardware Concept Headers:** `IHardwareModeAdapter.hpp`, `VmContext.hpp`, `VMManager_Internal.h`, `CDVDRingSlab.hpp`, and `SaveState.hpp` stubbed with standard C++20 standard library types and concept constraints.  
+4. **Core System & Hardware Concept Headers:** `IHardwareModeAdapter.hpp`, `VmContext.hpp`, `VMManager_Internal.h`, `CDVDRingSlab.hpp`, `SaveState.hpp`, `MTGS.h`, `IconsFontAwesome.h`, `Common.h`, `Config.h`, `Counters.h`, `Gif_Unit.h`, `Host.h`, `CDVD/CDVDcommon.h`, `CDVD/IsoFileFormats.h`, `CDVD/IsoReader.h`, `common/Error.h`, `common/Console.h`, `common/Threading.h`, `common/ScopedGuard.h`, and `common/Timer.h` stubbed with standard C++20 standard library types and concept constraints.  
 5. **Adapter Target Stubs:** `Ps2ConsoleAdapter.hpp` and `CohHArcadeAdapter.hpp` generated with lightweight virtual method declarations to allow target linking of `libax_pcsx2_adapter_ps2.a` and `libax_pcsx2_adapter_coh_h.a`.  
 6. **Remaining Core & Common Headers Expected:** Supplemental upstream headers (e.g., `common/Pcsx2Types.h`, `pcsx2/Sifcmd.h`, and `pcsx2/StateWrapper.h`) are resolved via standard include paths during build verification before replacing stubs with full staged implementation files in Phase 1 and Phase 2\.
 
@@ -77,7 +77,7 @@ During the initial bootstrap and CMake build verification stage, when `PCSX2_AX_
 ### **🛡️ Hardening Items \#1 & \#2: Cross-Thread Epoch/Lifecycle Ordering & Prototype Stub/Build-System Drift Guardrails 🔒**
 
 2. **Cross-Thread Lifecycle & Epoch Ordering Across `VmContext`, `SaveState`, and `VMManager`:** Strictly serialize and guard mode adapter transitions relative to active `SaveState` / `ACSRAM` / NVRAM commits, ensuring temporary `.tmp` save files are automatically cleaned up on any early failure path (including failed `fsync` or epoch mismatches). Write and validate actual archive payloads through `SaveScratchArena` rather than leaving placeholder arguments, and prevent `capture_snapshot` from racing with adapter teardown.  
-3. **Prototype Stub & Build-System Drift Guardrails (`PCSX2_AX_PLANNING_ONLY=ON` vs. Full Upstream Headers):** Enforce a strict no-stub-leak-into-release check so prototype stubs generated in `${CMAKE_CURRENT_BINARY_DIR}/proto_inc` cannot ship into non-planning or production release builds. Gate platform-specific or GUI/Discord headers (such as `RedtapeWindows.h`, `ImGui`, and `discord_rpc.h`) behind explicit CMake feature options so headless **`Piccolo-AX`** (`Linux 6.12-rt`, `<= 524288 KB` / `512 MB` `toram` `EROFS` `lz4hc,9`) builds remain completely lean and free of unnecessary bloat.  
+3. **Prototype Stub & Build-System Drift Guardrails (`PCSX2_AX_PLANNING_ONLY=ON` vs. Full Upstream Headers):** Enforce a strict no-stub-leak-into-release check so prototype stubs generated in `${CMAKE_CURRENT_BINARY_DIR}/proto_inc` cannot ship into non-planning or production release builds. Gate platform-specific or GUI/Discord headers (such as `RedtapeWindows.h`, `ImGui`, and `discord_rpc.h`) behind explicit CMake feature options so headless **`Piccolo-AX`** (`Linux 6.12-rt`, `<= 524288 KB` / `512 MB` `toram` `EROFS` `lz4hc,9`) builds remain completely lean and free of unnecessary bloat. Additionally, ensure workflow submodule checkout resilience by handling stale `DreamPicoPort-API` gitlink entries in CI so workflow jobs do not fail post-checkout.  
 4. **Apply Guarded `-march=skylake` \+ `ThinLTO` \+ 3-Stage PGO:** Compile with `-march=skylake` (`AVX2`, `FMA`, `BMI1`/`BMI2` on non-SMT physical cores, avoiding `-march=native` portability traps and I-cache bloat), collect profiles across active PS2 and System 246/256 gameplay (not idle menus), and merge via `llvm-profdata` (`-fprofile-use`) before locking release artifacts.
 
 ---
@@ -119,21 +119,28 @@ struct FrameTelemetrySample {
 };
 
 class VmContext;
+class StateWrapper;
 
 class IHardwareModeAdapter {
-public:  
+public:
     virtual ~IHardwareModeAdapter() = default;
-    virtual HardwareMode GetHardwareMode() const noexcept = 0;
-    virtual bool InitializeSession(VmContext& vm_ctx) = 0;
-    virtual void OnFrameBoundary(const FrameTelemetrySample& telemetry) = 0;
-    virtual ModeEpochSnapshot CaptureEpochSnapshot() const = 0;
-    virtual void ShutdownSession() noexcept = 0;
+    virtual HardwareMode mode() const noexcept = 0;
+    virtual std::filesystem::path save_directory() const = 0;
+    virtual bool initialize(VmContext& vm_ctx) = 0;
+    virtual void reset() = 0;
+    virtual void shutdown() noexcept = 0;
+    virtual void on_vsync(const FrameTelemetrySample& telemetry) = 0;
+    virtual BiosDescriptor bios_descriptor() const = 0;
+    virtual ModeEpochSnapshot capture_snapshot(uint64_t epoch) const = 0;
+    virtual bool read_media_sectors(uint64_t lba, uint32_t count, void* dst) = 0;
+    virtual bool freeze_state(StateWrapper& wrapper) = 0;
 };
 
 template <typename T>
-concept HardwareModeAdapterConcept = std::derived_from<T, IHardwareModeAdapter> && requires(T adapter, VmContext& ctx) {
-    { adapter.GetHardwareMode() } -> std::same_as<HardwareMode>;
-    { adapter.InitializeSession(ctx) } -> std::same_as<bool>;
+concept HardwareModeAdapterConcept = std::derived_from<T, IHardwareModeAdapter> && requires(T adapter, VmContext& ctx, StateWrapper& sw) {
+    { adapter.mode() } -> std::same_as<HardwareMode>;
+    { adapter.initialize(ctx) } -> std::same_as<bool>;
+    { adapter.freeze_state(sw) } -> std::same_as<bool>;
 };
 
 } // namespace pcsx2_ax::core
@@ -189,13 +196,18 @@ namespace pcsx2_ax::adapters::ps2 {
 
 class Ps2ConsoleAdapter final : public core::IHardwareModeAdapter {
 public:
-    core::HardwareMode GetHardwareMode() const noexcept override {
+    core::HardwareMode mode() const noexcept override {
         return core::HardwareMode::Ps2Console;
     }
-    bool InitializeSession(core::VmContext& vm_ctx) override;
-    void OnFrameBoundary(const core::FrameTelemetrySample& telemetry) override;
-    core::ModeEpochSnapshot CaptureEpochSnapshot() const override;
-    void ShutdownSession() noexcept override;
+    std::filesystem::path save_directory() const override;
+    bool initialize(core::VmContext& vm_ctx) override;
+    void reset() override;
+    void shutdown() noexcept override;
+    void on_vsync(const core::FrameTelemetrySample& telemetry) override;
+    core::BiosDescriptor bios_descriptor() const override;
+    core::ModeEpochSnapshot capture_snapshot(uint64_t epoch) const override;
+    bool read_media_sectors(uint64_t lba, uint32_t count, void* dst) override;
+    bool freeze_state(core::StateWrapper& wrapper) override;
 };
 
 } // namespace pcsx2_ax::adapters::ps2
@@ -210,15 +222,58 @@ namespace pcsx2_ax::adapters::coh_h {
 
 class CohHArcadeAdapter final : public core::IHardwareModeAdapter {
 public:
-    core::HardwareMode GetHardwareMode() const noexcept override {
+    core::HardwareMode mode() const noexcept override {
         return core::HardwareMode::CohHArcade;
     }
-    bool InitializeSession(core::VmContext& vm_ctx) override;
-    void OnFrameBoundary(const core::FrameTelemetrySample& telemetry) override;
-    core::ModeEpochSnapshot CaptureEpochSnapshot() const override;
-    void ShutdownSession() noexcept override;
+    std::filesystem::path save_directory() const override;
+    bool initialize(core::VmContext& vm_ctx) override;
+    void reset() override;
+    void shutdown() noexcept override;
+    void on_vsync(const core::FrameTelemetrySample& telemetry) override;
+    core::BiosDescriptor bios_descriptor() const override;
+    core::ModeEpochSnapshot capture_snapshot(uint64_t epoch) const override;
+    bool read_media_sectors(uint64_t lba, uint32_t count, void* dst) override;
+    bool freeze_state(core::StateWrapper& wrapper) override;
 };
 
 } // namespace pcsx2_ax::adapters::coh_h
 ```
 
+---
+
+## 🎛️ 4\. Deep-Dive Decoupling & Optimization Analysis: Audio, Video Rendering, CPU/VU/IOP, Persistence/Inputs & Storage/Footprint 🔬
+
+### **🔊 Audio Subsystem: SPU2, ADPCM/CDDA/Arcade Stream & USB DAC Lock**
+
+The SPU2 audio subsystem requires strict decoupling of sample generation and ring buffer transport from the main guest CPU and IRQ loop to guarantee stutter-free, bit-exact playback. SPU2 DMA transfers and register writes process ADPCM streams and CDDA/arcade audio tracks into a lock-free intermediate ring buffer. Real-time audio mixing and sample transport run on a dedicated thread scheduled under `SCHED_FIFO` and pinned exclusively to Core 0 (`0x01`) on the reference 6C/6T Intel Core i5-9600K/8600K architecture. Pinned to the same isolated core is the xHCI USB host controller interrupt handling the HiBy FC3 USB DAC (ESS Sabre ES9281AC Pro / ES9281PRO), along with the system-wide `ScopedDacLock` managed through `/run/lock/ax-dac.lock` paired with clean modern kernel/ALSA device handling. Signal handlers for `SIGINT`, `SIGTERM`, and `SIGUSR1` ensure that abruptly terminated sessions reliably release the file lock and flush audio DMA queues without leaving hardware locks hanging. Crucially, when switching or resetting between retail PS2 and COH-H / System 246 & 256 modes, an explicit epoch-fence drain and clock-domain guardrails prevent queued audio frames from carrying stale sample-rate or buffer-mode assumptions across an epoch boundary.  
+Mode-specific audio behavior is isolated entirely between the thin mode adapters while keeping the core SPU2 emulation engine in `libax_pcsx2_core` pristine. When operating in retail console mode (`Ps2ConsoleAdapter`, `--mode ps2`), standard PS2 SPU2 dual-core voice mixing, reverb processing, and memory mapping are active without modifying upstream defaults. When running arcade workloads (`CohHArcadeAdapter`, `--mode coh-h` / `PCSX2x6`), Namco System 246/256 multi-channel streams and custom cabinet sound routing are handled through dedicated adapter hooks, ensuring zero pollution of retail SPU2 code paths.
+
+### **🖼️ Video Rendering Subsystem: Graphics Synthesizer (GS), MTGS & Vulkan 1.3 VRAM Budgeting**
+
+The Graphics Synthesizer (GS) presentation pipeline decouples command submission from Emotion Engine (EE) and Vector Unit (VU0/VU1) execution using Multi-Threaded GS (MTGS) synchronized via `VmContext` epoch boundaries. Rendering operations and GPU IRQ handling are pinned to Core 1 (`0x02`), giving Vulkan 1.3 submission threads an uninhibited physical core. On the reference NVIDIA GeForce GTX 980 Ti (6 GB Maxwell GM200, 580.\* legacy driver), strict memory safety is enforced by tying `FrameTelemetrySample` VRAM reporting directly into the proactive asynchronous prune trigger at `5.00 GiB` and an absolute VRAM ceiling at `5.50 GiB`. Furthermore, MTGS and renderer submission queues cleanly discard or invalidate pending frame work on `VmContext` epoch changes before a VM reset or mode switch completes, preventing ghost surface updates. Transient shader compilation, pipeline caches, and unpack buffers are staged strictly in `/dev/shm` and persisted across reboots via `K01piccolo-sync`, keeping flash writes to zero during active rendering.  
+Headless builds targeting the bare-metal `Piccolo-AX` appliance (`<= 524288 KB` / `512 MB` EROFS image) completely strip heavy desktop GUI elements (ImGui, Qt, Discord RPC, Windows platform stubs). Optional high-level video enhancements, such as an `ax_video_upscaler` component or debug overlay extensions, remain strictly decoupled modular plugins that can be compiled out entirely to preserve minimal image sizes and low memory overhead during headless execution.
+
+### **⚡ CPU, Vector Units & Sub-Processors: EE, VU0/VU1, R3000A IOP & SIF/CDVD Interconnect**
+
+Guest execution allocates core CPU workload threads across dedicated physical cores to eliminate context-switching latency. Main Emotion Engine (EE) CPU emulation, microVU recompiler threads (VU0 and VU1), and VIF unpackers are pinned across Cores 2–4 (`0x1C`), operating with an explicit recompiler thread stack allocation of `EMU_THREAD_STACK_SIZE = 2 * 1024 * 1024` (2 MB). A strict zero-allocation and zero-syscall rule is enforced inside hot R5900, microVU, VIF, and CDVD ring-slab execution paths—pre-faulting and reserving HugeTLB and `mlockall` memory upfront. Background filesystem prefetching via `vmtouch`, lock-free state synchronization via `K01piccolo-sync`, and dynamic buffer growth are offloaded entirely to Core 5 (`0x20`) or non-hot control paths, ensuring guest execution on Cores 2–4 remains free of allocator or page-fault jitter. Shared core hardware features—including SIF (Sub-System Interface) DMA transfers, Scratchpad RAM (SPR), virtual TLB memory translation (vtlb), and the lock-free `CDVDRingSlab` with eventfd-backed `WakeSignal` mechanisms—reside strictly inside `libax_pcsx2_core`.  
+Per-mode peripheral and storage interfaces are cleanly encapsulated within their respective adapters. `Ps2ConsoleAdapter` manages retail CDVD optical disc parsing (ISO/CHD/ZSO), memory cards, and standard SIO2 controller interfaces. Conversely, `CohHArcadeAdapter` encapsulates Namco System 246/256/Super 256 arcade hardware components: ACCORE board logic, ACATA/ACATAPI media interfaces, `ACATA_IO_CHD` stream handling, ACRAM, ACSRAM, ACJV (JVS I/O), and ACUART communication controllers. It is vital to clarify the hardware architecture: both retail PS2 and Namco System 246/256 arcade platforms display graphics and execute rasterization through the combination of the 128-bit Emotion Engine (EE), Vector Units (VU0/VU1), I/O Processor (R3000A IOP), and the Graphics Synthesizer (GS with embedded eDRAM over VIF/GIF buses)—rather than relying on a legacy 2D PPU structure.
+
+### **🎮 Input, Peripherals & Atomic Persistence: Controls, Zero-Loss Save Routing & Compiler Optimization**
+
+Input processing decouples peripheral state polling from internal VMManager execution loops. Standard DualShock 1/2 gamepads, pressure-sensitive button mappings, and multitap adapters are handled inside `Ps2ConsoleAdapter`. Arcade cabinet controls—including JVS I/O polling, coin drop registers, test/service switches, arcade steering wheels with force feedback, dual light-gun inputs, and UART security dongle communication (COH-H10020)—are encapsulated within `CohHArcadeAdapter`. Neither adapter injects device-specific polling logic into the core emulation loop.  
+To guarantee zero-loss state persistence to `SHARE` (`/userdata`), all save states, memory card mutations, ACSRAM writes, and NVRAM dumps use atomic mutation-time file transactions across `/userdata/saves/ps2/` and `/userdata/saves/pcsx2x6/`. Data is written to a temporary file on the destination mount (`.tmp`), explicitly flushed to physical media via `fsync()` along with parent-directory `fsync()`, and atomically replaced using `rename()`. On any `fsync()` failure, epoch mismatch, or short/invalid write, failure-path cleanup automatically removes the orphaned `.tmp` file before post-rename verification confirms header and integrity layout. Build optimization targets non-SMT physical cores using `-march=skylake` (AVX2, FMA, BMI1/BMI2) paired with ThinLTO and a 3-stage Profile-Guided Optimization (PGO) workflow collected during active gameplay, benchmarked against a clean control baseline to ensure maximum frame rate stability and minimal latency smear.
+
+### **📦 Storage, Media & Image Footprint: CDVD, ACATA\_IO\_CHD, /dev/shm & EROFS Appliance Build Pipeline**
+
+Media access pipelines decouple disk latency from guest CPU execution through coalesced hunk/sector caching and reusable staging buffers (such as `SaveScratchArena` and dedicated ring slots) in both retail CDVD disc readers and `ACATA_IO_CHD` arcade streams. Volatile unpack files, shader caches, and gameplay PGO profiles stage strictly in `/dev/shm` and synchronize atomically to `/userdata` under `K01piccolo-sync` control.  
+To fit within the bare-metal `Piccolo-AX` footprint ceiling of `<= 524288 KB` (512 MB) for the `toram EROFS` (`lz4hc,9`) compressed image with A/B fallback intact, all desktop GUI components, debug overlays, Discord RPC, and Windows platform stubs remain gated behind explicit CMake build options. Automated build guardrails enforce strict no-stub-leak-into-release checks to ensure prototype planning stubs never leak into production release artifacts compiled with `-march=skylake + ThinLTO + gameplay PGO sweeps.`  
+---
+
+## ⚖️ 5\. Comparison Against Eden Espresso Documentation & Key Learnings Applied ⚖️
+
+Comparing `PCSX2_AX` against our baseline `Eden Espresso Wave [AX]` (MASTER v1.35 / v1.35.1 lineage \+ Piccolo-AX v0.6 appliance rules) highlights how core architectural principles have been adapted and enhanced for modern 128-bit PS2 and arcade hardware emulation:
+
+7. **Shared Core vs. Thin Mode Adapter Decoupling:** Following Eden Espresso's modular engine separation, `PCSX2_AX` isolates low-level hardware emulation into `libax_pcsx2_core`, while routing target specifics through thin `Ps2ConsoleAdapter` and `CohHArcadeAdapter` implementations under standard C++20 concepts.  
+8. **Strict Core Isolation & Topology (2:3:1):** Memory bandwidth and thread contention lessons learned in Eden Espresso directly inform our 6-core mapping: Core 0 handles real-time audio and `/run/lock/ax-dac.lock`, Core 1 executes Vulkan 1.3 presentation, Cores 2–4 run EE/microVU recompiler execution with a `2 MB` stack budget, and Core 5 manages I/O, sync, and storage prefetching.  
+9. **Telemetry & VRAM Ceiling Enforcement:** Expanding on Eden Espresso's proactive memory management, `FrameTelemetrySample` feedback triggers async VRAM pruning at `5.00 GiB` and enforces a strict `5.50 GiB` ceiling for Vulkan 1.3 context creation on our Maxwell GM200 reference hardware.  
+10. **Zero-Loss Persistence & Release Hygiene:** Inherited directly from Piccolo-AX bare-metal rules, mutation-time atomic disk writes (`.tmp` \-\> `fsync` \-\> `rename`) protect save data in `/userdata`, while build pipelines enforce strict guardrails against prototype stub leaks and keep the compressed EROFS image safely under `512 MB`.
