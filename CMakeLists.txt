@@ -47,6 +47,3 @@ endif()
 # if(TARGET <your_genx_target> AND TARGET genx_ax_persist)
 #     target_link_libraries(<your_genx_target> PRIVATE genx_ax_persist)
 # endif()
-```[cite: 26]
-
-Do you have `src/ax_retro_save.hpp` or `src/ax_retro_save_callers.cpp` for `Generation-X-AX` to check next, or are you moving on to `Amiberry-AX`?
