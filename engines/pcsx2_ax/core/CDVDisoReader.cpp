@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "CDVDRingSlab.hpp"
-#include "CDVDcommon.h"
+#include "IHardwareModeAdapter.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <span>
@@ -19,40 +20,56 @@
 
 namespace pcsx2_ax::cdvd {
 
+class ZeroCopyIsoReader;
+
 class CdvdStreamController {
 public:
+    CdvdStreamController() noexcept = default;
+    ~CdvdStreamController() noexcept { stop(); }
+
+    CdvdStreamController(const CdvdStreamController&)            = delete;
+    CdvdStreamController& operator=(const CdvdStreamController&) = delete;
+
     [[nodiscard]] bool start(ZeroCopyIsoReader* reader) noexcept {
+        if (reader == nullptr) {
+            return false;
+        }
+        stop();
         reader_ = reader;
         running_.store(true, std::memory_order_release);
-        worker_quiesced_.store(false, std::memory_order_relaxed);
+        worker_quiesced_.store(false, std::memory_order_release);
         worker_ = std::thread([this]() noexcept { worker_loop(); });
         return true;
     }
 
     void stop() noexcept {
         running_.store(false, std::memory_order_release);
+        running_.notify_all();
         if (worker_.joinable()) {
             worker_.join();
         }
+        reader_ = nullptr;
     }
 
-    // Called on the EE/IOP emulation core to fulfill a sequential or seeked DMA read.
-    // Transfers directly from locked HugeTLB SectorSlot into IOP destination buffer.
     [[nodiscard]] bool read_sectors_to_iop(uint32_t start_lba,
                                            uint32_t sector_count,
                                            uint8_t* iop_dst_ptr,
                                            std::size_t stride_bytes) noexcept {
-        for (uint32_t i = 0; i < sector_count; ++i) {
+        if (reader_ == nullptr || iop_dst_ptr == nullptr || sector_count == 0u || stride_bytes == 0u) {
+            return false;
+        }
+
+        for (uint32_t i = 0u; i < sector_count; ++i) {
             const uint32_t target_lba = start_lba + i;
 
             const SectorSlot* slot = reader_->peek_sector();
             if (slot == nullptr || slot->lba != target_lba) {
-                // Cache miss or non-sequential jump: realign ring to target_lba
                 reader_->request_seek(target_lba, worker_quiesced_);
                 while ((slot = reader_->peek_sector()) == nullptr) {
                     if (!running_.load(std::memory_order_acquire)) {
                         return false;
                     }
+                    std::this_thread::sleep_for(std::chrono::microseconds(100));
                 }
             }
 
@@ -83,19 +100,23 @@ private:
             if (reader_->seek_pending()) {
                 worker_quiesced_.store(true, std::memory_order_release);
                 while (reader_->seek_pending() && running_.load(std::memory_order_acquire)) {
-                    // Wait for consumer seek reset to complete
+                    std::this_thread::sleep_for(std::chrono::microseconds(50));
                 }
                 worker_quiesced_.store(false, std::memory_order_release);
                 continue;
             }
 
             if (reader_->needs_readahead()) {
-                (void)reader_->prefetch_burst();
+                const std::size_t produced = reader_->prefetch_burst();
+                if (produced == 0u) {
+                    std::this_thread::sleep_for(std::chrono::microseconds(250));
+                }
             } else {
-                // Ring is >50% full; yield briefly without burning Core 5
-                std::this_thread::yield();
+                // Ring is >=50% full; sleep briefly instead of tight-spinning Core 5
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         }
+
         worker_quiesced_.store(true, std::memory_order_release);
     }
 
