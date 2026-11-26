@@ -5,7 +5,9 @@
 
 #include <atomic>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -19,19 +21,19 @@ inline constexpr std::size_t kTelemetryRingMask = kTelemetryRingCapacity - 1u;
 inline constexpr double kVramPruneGib = 5.00;
 inline constexpr double kVramCeilingGib = 5.50;
 
-enum class HardwareMode : uint32_t {
-	Ps2Console = 0u,
-	CohHArcade = 1u,
+enum class HardwareMode : uint8_t {
+	Ps2Console = 0u, // Retail PS2 (--mode ps2 -> /userdata/saves/ps2/)
+	CohHArcade = 1u, // Namco System 246/256 (--mode coh-h -> /userdata/saves/pcsx2x6/)
 };
 
 struct BiosDescriptor {
 	uint32_t rom_version{0u};
 	uint32_t bios_crc{0u};
-	std::string_view region_code{"NTSC"};
+	std::string_view region_code{};
 	bool is_arcade_coh_h{false};
 };
 
-// Immutable generation-stamped snapshot of active hardware/mode metadata
+// Immutable epoch-stamped snapshot of active hardware/mode metadata
 struct alignas(kCacheLineBytes) ModeEpochSnapshot {
 	uint64_t epoch{1u};
 	HardwareMode mode{HardwareMode::Ps2Console};
@@ -39,7 +41,7 @@ struct alignas(kCacheLineBytes) ModeEpochSnapshot {
 	std::string_view save_directory{"/userdata/saves/ps2/"};
 };
 
-// Lock-free per-frame telemetry record for ax-sdk v1_36_2 observability
+// Lock-free per-frame telemetry sample for ax-sdk v1_36_2 observability
 struct alignas(kCacheLineBytes) FrameTelemetrySample {
 	uint64_t frame_index{0u};
 	uint64_t epoch{1u};
@@ -53,7 +55,7 @@ struct alignas(kCacheLineBytes) FrameTelemetrySample {
 	bool vram_prune_triggered{false};
 };
 
-// C++20 concept for zero-overhead static adapter instantiation in single-mode/harness builds
+// C++20 concept for static adapter instantiation in single-mode/harness builds
 template <typename T>
 concept HardwareModeAdapterConcept = requires(T adapter, const T cadapter, uint64_t epoch, StateWrapper& wrapper) {
 	{ cadapter.mode() } noexcept -> std::convertible_to<HardwareMode>;
@@ -67,12 +69,20 @@ concept HardwareModeAdapterConcept = requires(T adapter, const T cadapter, uint6
 	{ adapter.freeze_state(wrapper) } -> std::convertible_to<bool>;
 };
 
+// Narrow boundary interface inside libax_pcsx2_core so shared core sources
+// never directly include adapters/ps2/ or adapters/coh_h/.
 class IHardwareModeAdapter {
 public:
 	virtual ~IHardwareModeAdapter() noexcept = default;
 
 	[[nodiscard]] virtual HardwareMode mode() const noexcept = 0;
 	[[nodiscard]] virtual std::string_view save_directory() const noexcept = 0;
+
+	[[nodiscard]] virtual bool initialize() = 0;
+	[[nodiscard]] virtual bool reset() = 0;
+	virtual void shutdown() noexcept = 0;
+	virtual void on_vsync() noexcept = 0;
+
 	[[nodiscard]] virtual BiosDescriptor bios_descriptor() const noexcept = 0;
 
 	[[nodiscard]] virtual ModeEpochSnapshot capture_snapshot(uint64_t epoch) const noexcept {
@@ -84,14 +94,15 @@ public:
 		};
 	}
 
-	[[nodiscard]] virtual bool initialize() = 0;
-	[[nodiscard]] virtual bool reset() = 0;
-	virtual void shutdown() noexcept = 0;
-	virtual void on_vsync() noexcept = 0;
+	[[nodiscard]] virtual bool read_media_sectors(uint32_t lba,
+	                                              uint32_t sector_count,
+	                                              std::span<uint8_t> out_bytes,
+	                                              uint16_t& out_sector_bytes) = 0;
+
 	[[nodiscard]] virtual bool freeze_state(StateWrapper& wrapper) = 0;
 };
 
-// Explicit re-entrant VM context handle (no hidden static bridge required)
+// Explicit re-entrant VM state context handle (no hidden singleton required)
 struct alignas(kCacheLineBytes) VmContext {
 	std::atomic<uint64_t> epoch{1u};
 	std::atomic<uint32_t> active_snapshot_slot{0u};
@@ -106,10 +117,10 @@ struct alignas(kCacheLineBytes) VmContext {
 	FrameTelemetrySample telemetry_ring[kTelemetryRingCapacity]{};
 };
 
-// Template helper enabling zero-vcall static fast paths when concrete adapter type is known
+// Zero-vcall static fast-path helper when concrete adapter type satisfies the concept
 template <HardwareModeAdapterConcept AdapterT>
-[[nodiscard]] inline bool run_static_mode_frame(AdapterT& adapter, uint64_t epoch) noexcept {
-	const auto snap = adapter.capture_snapshot(epoch);
+[[nodiscard]] inline bool run_static_mode_frame(AdapterT& adapter, uint64_t epoch) {
+	const ModeEpochSnapshot snap = adapter.capture_snapshot(epoch);
 	(void)snap;
 	adapter.on_vsync();
 	return true;
