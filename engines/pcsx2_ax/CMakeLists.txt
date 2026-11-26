@@ -66,6 +66,61 @@ if(PCSX2_AX_PLANNING_ONLY)
     file(MAKE_DIRECTORY "${PCSX2_AX_PROTO_INC_DIR}/CDVD")
     file(MAKE_DIRECTORY "${PCSX2_AX_PROTO_INC_DIR}/common")
 
+    if(NOT EXISTS "${PCSX2_AX_CORE_DIR}/Common.h")
+        file(WRITE "${PCSX2_AX_PROTO_INC_DIR}/Common.h"
+"#pragma once
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <string_view>
+
+using u8 = uint8_t;
+using u16 = uint16_t;
+using u32 = uint32_t;
+using u64 = uint64_t;
+using s8 = int8_t;
+using s16 = int16_t;
+using s32 = int32_t;
+using s64 = int64_t;
+using uint = unsigned int;
+using sptr = intptr_t;
+using uptr = uintptr_t;
+
+#ifndef __fi
+#if defined(_MSC_VER)
+#define __fi __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define __fi inline __attribute__((always_inline))
+#else
+#define __fi inline
+#endif
+#endif
+
+#ifndef __noinline
+#if defined(_MSC_VER)
+#define __noinline __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define __noinline __attribute__((noinline))
+#else
+#define __noinline
+#endif
+#endif
+
+inline u8 itob(u8 x) noexcept { return static_cast<u8>(((x / 10u) << 4u) | (x % 10u)); }
+inline u8 btoi(u8 x) noexcept { return static_cast<u8>(((x >> 4u) * 10u) + (x & 0x0Fu)); }
+inline u16 GetBufferU16(const u8* buf, size_t off) noexcept {
+    u16 v = 0;
+    std::memcpy(&v, buf + off, sizeof(v));
+    return v;
+}
+inline u32 GetBufferU32(const u8* buf, size_t off) noexcept {
+    u32 v = 0;
+    std::memcpy(&v, buf + off, sizeof(v));
+    return v;
+}
+")
+    endif()
+
     if(NOT EXISTS "${PCSX2_AX_CORE_DIR}/Counters.h")
         file(WRITE "${PCSX2_AX_PROTO_INC_DIR}/Counters.h"
 "#pragma once
@@ -159,6 +214,27 @@ struct CDVD_API {
 
 extern const CDVD_API* CDVD;
 extern u32 g_last_sector_block_lsn;
+")
+    endif()
+
+    if(NOT EXISTS "${PCSX2_AX_CORE_DIR}/CDVD/IsoReader.h")
+        file(WRITE "${PCSX2_AX_PROTO_INC_DIR}/CDVD/IsoReader.h"
+"#pragma once
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+class Error;
+
+class IsoReader {
+public:
+    IsoReader() = default;
+    ~IsoReader() = default;
+    bool Open(Error*) { return false; }
+    bool ReadFile(const char*, std::vector<uint8_t>*, Error*) { return false; }
+    static std::string_view RemoveVersionIdentifierFromPath(std::string_view path) noexcept { return path; }
+};
 ")
     endif()
 endif()
