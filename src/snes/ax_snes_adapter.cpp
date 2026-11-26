@@ -176,65 +176,85 @@ bool AxSnesAdapter::Initialize(const std::string& config_path, const std::string
             : val;
 
         if (current_section == "snes") {
-            if (key == "enabled") extras_.enabled = ParseBool(unquoted, extras_.enabled);
-            else if (key == "engine_backend") runtime_cfg_.engine_backend = unquoted;
-            else if (key == "hardware_profile") runtime_cfg_.hardware_profile = unquoted;
-            else if (key == "profile_preset") runtime_cfg_.preset = ParsePreset(unquoted);
-            else if (key == "audio_filter_mode") extras_.audio_filter_mode = ParseAudioFilterMode(unquoted);
-            else if (key == "auto_detect_coprocessor") extras_.auto_detect_coprocessor = ParseBool(unquoted, extras_.auto_detect_coprocessor);
-            else if (key == "alsa_device") runtime_cfg_.alsa_device = unquoted;
-            else if (key == "alsa_format") extras_.alsa_format = unquoted;
-            else if (key == "alsa_rate") runtime_cfg_.alsa_rate = ParseUnsigned(unquoted, runtime_cfg_.alsa_rate);
-            else if (key == "alsa_period_frames") runtime_cfg_.alsa_period_frames = ParseUnsigned(unquoted, runtime_cfg_.alsa_period_frames);
-            else if (key == "alsa_buffer_periods") runtime_cfg_.alsa_buffer_periods = ParseUnsigned(unquoted, runtime_cfg_.alsa_buffer_periods);
-            else if (key == "rate_guard_max_ppm") runtime_cfg_.rate_guard_max_ppm = ParseInt(unquoted, runtime_cfg_.rate_guard_max_ppm);
-            else if (key == "rate_guard_ring_target_pct") runtime_cfg_.rate_guard_ring_target_pct = ParseInt(unquoted, runtime_cfg_.rate_guard_ring_target_pct);
-            else if (key == "dac_lock_path") extras_.dac_lock_path = unquoted;
-            else if (key == "shm_staging_enabled") extras_.shm_staging_enabled = ParseBool(unquoted, extras_.shm_staging_enabled);
-            else if (key == "controls_config_path") extras_.controls_config_path = unquoted;
-            else if (key == "persistent_save_dir") extras_.persistent_save_dir = unquoted;
-            else if (key == "persistent_rom_dir") extras_.persistent_rom_dir = unquoted;
-            else if (key == "shm_rom_dir") extras_.shm_rom_dir = unquoted;
-            else if (key == "shm_save_dir") extras_.shm_save_dir = unquoted;
-            else if (key == "atomic_flush_on_exit") extras_.atomic_flush_on_exit = ParseBool(unquoted, extras_.atomic_flush_on_exit);
+            if (key == "enabled") cfg_.enabled = ParseBool(unquoted, cfg_.enabled);
+            else if (key == "engine_backend") cfg_.engine_backend = unquoted;
+            else if (key == "hardware_profile") cfg_.hardware_profile = unquoted;
+            else if (key == "profile_preset") cfg_.preset = ParsePreset(unquoted);
+            else if (key == "audio_filter_mode") cfg_.audio_filter_mode = ParseAudioFilterMode(unquoted);
+            else if (key == "auto_detect_coprocessor") cfg_.auto_detect_coprocessor = ParseBool(unquoted, cfg_.auto_detect_coprocessor);
+            else if (key == "alsa_device") cfg_.alsa_device = unquoted;
+            else if (key == "alsa_format") cfg_.alsa_format = unquoted;
+            else if (key == "alsa_rate") cfg_.alsa_rate = ParseUnsigned(unquoted, cfg_.alsa_rate);
+            else if (key == "alsa_period_frames") cfg_.alsa_period_frames = ParseUnsigned(unquoted, cfg_.alsa_period_frames);
+            else if (key == "alsa_buffer_periods") cfg_.alsa_buffer_periods = ParseUnsigned(unquoted, cfg_.alsa_buffer_periods);
+            else if (key == "rate_guard_enabled") cfg_.rate_guard_enabled = ParseBool(unquoted, cfg_.rate_guard_enabled);
+            else if (key == "rate_guard_max_ppm") cfg_.rate_guard_max_ppm = ParseInt(unquoted, cfg_.rate_guard_max_ppm);
+            else if (key == "rate_guard_ring_target_pct") cfg_.rate_guard_ring_target_pct = ParseInt(unquoted, cfg_.rate_guard_ring_target_pct);
+            else if (key == "rate_guard_hysteresis_pct") cfg_.rate_guard_hysteresis_pct = ParseInt(unquoted, cfg_.rate_guard_hysteresis_pct);
+            else if (key == "dac_lock_path") cfg_.dac_lock_path = unquoted;
+            else if (key == "shm_staging_enabled") cfg_.shm_staging_enabled = ParseBool(unquoted, cfg_.shm_staging_enabled);
+            else if (key == "controls_config_path") cfg_.controls_config_path = unquoted;
+            else if (key == "persistent_save_dir") cfg_.persistent_save_dir = unquoted;
+            else if (key == "persistent_rom_dir") cfg_.persistent_rom_dir = unquoted;
+            else if (key == "shm_rom_dir") cfg_.shm_rom_dir = unquoted;
+            else if (key == "shm_save_dir") cfg_.shm_save_dir = unquoted;
+            else if (key == "atomic_flush_on_exit") cfg_.atomic_flush_on_exit = ParseBool(unquoted, cfg_.atomic_flush_on_exit);
         }
     }
 
-    switch (runtime_cfg_.preset) {
+    switch (cfg_.preset) {
         case SnesPreset::CoprocessorBoost:
-            runtime_cfg_.cpu_overclock_pct = 100;
-            runtime_cfg_.coprocessor_overclock_pct = 125;
-            runtime_cfg_.runahead_frames = 0;
-            runtime_cfg_.thread_boost_coprocessor = true;
+            cfg_.cpu_overclock_pct = 100;
+            cfg_.coprocessor_overclock_pct = 125;
+            cfg_.runahead_frames = 0;
+            cfg_.thread_boost_coprocessor = true;
             break;
         case SnesPreset::LowLatencyInput:
-            runtime_cfg_.cpu_overclock_pct = 100;
-            runtime_cfg_.coprocessor_overclock_pct = 100;
-            runtime_cfg_.runahead_frames = 1;
-            runtime_cfg_.thread_boost_coprocessor = false;
+            cfg_.cpu_overclock_pct = 100;
+            cfg_.coprocessor_overclock_pct = 100;
+            cfg_.runahead_frames = 1;
+            cfg_.thread_boost_coprocessor = false;
             break;
         case SnesPreset::StockCycleExact:
         default:
-            runtime_cfg_.cpu_overclock_pct = 100;
-            runtime_cfg_.coprocessor_overclock_pct = 100;
-            runtime_cfg_.runahead_frames = 0;
-            runtime_cfg_.thread_boost_coprocessor = false;
+            cfg_.cpu_overclock_pct = 100;
+            cfg_.coprocessor_overclock_pct = 100;
+            cfg_.runahead_frames = 0;
+            cfg_.thread_boost_coprocessor = false;
             break;
     }
 
-    ConfigureAudioFilter(extras_.audio_filter_mode);
-    return extras_.enabled && !rom_path_.empty();
+    ConfigureAudioFilter(cfg_.audio_filter_mode);
+    return cfg_.enabled && !rom_path_.empty();
+}
+
+SnesRuntimeConfig AxSnesAdapter::ToRuntimeConfig() const {
+    SnesRuntimeConfig out{};
+    out.engine_backend = cfg_.engine_backend;
+    out.hardware_profile = cfg_.hardware_profile;
+    out.alsa_device = cfg_.alsa_device;
+    out.preset = cfg_.preset;
+    out.alsa_rate = cfg_.alsa_rate;
+    out.alsa_period_frames = cfg_.alsa_period_frames;
+    out.alsa_buffer_periods = cfg_.alsa_buffer_periods;
+    out.cpu_overclock_pct = cfg_.cpu_overclock_pct;
+    out.coprocessor_overclock_pct = cfg_.coprocessor_overclock_pct;
+    out.runahead_frames = cfg_.runahead_frames;
+    out.thread_boost_coprocessor = cfg_.thread_boost_coprocessor;
+    out.rate_guard_max_ppm = cfg_.rate_guard_max_ppm;
+    out.rate_guard_ring_target_pct = cfg_.rate_guard_ring_target_pct;
+    return out;
 }
 
 void AxSnesAdapter::ConfigureAudioFilter(AudioFilterMode mode) noexcept {
-    extras_.audio_filter_mode = mode;
+    cfg_.audio_filter_mode = mode;
     filter_state_.z1_l = 0.0;
     filter_state_.z2_l = 0.0;
     filter_state_.z1_r = 0.0;
     filter_state_.z2_r = 0.0;
     filter_state_.crossfeed_mix = 0.0;
 
-    const double sr = static_cast<double>(runtime_cfg_.alsa_rate);
+    const double sr = static_cast<double>(cfg_.alsa_rate);
     switch (mode) {
         case AudioFilterMode::ZsnesWarm:
             ComputeLowPassCoeffs(sr, 11500.0, 0.707, filter_state_);
@@ -258,7 +278,7 @@ void AxSnesAdapter::ConfigureAudioFilter(AudioFilterMode mode) noexcept {
 
 void AxSnesAdapter::ProcessAudioFilterStereo(float* interleaved_lr, std::size_t frame_count) noexcept {
     if (!interleaved_lr || frame_count == 0) return;
-    if (extras_.audio_filter_mode == AudioFilterMode::Default) {
+    if (cfg_.audio_filter_mode == AudioFilterMode::Default) {
         return;
     }
 
@@ -299,12 +319,13 @@ void AxSnesAdapter::ProcessAudioFilterStereo(float* interleaved_lr, std::size_t 
 }
 
 int AxSnesAdapter::ComputeRateGuardPpm(int current_ring_fill_pct) const noexcept {
-    const int err_pct = current_ring_fill_pct - runtime_cfg_.rate_guard_ring_target_pct;
-    if (std::abs(err_pct) <= 5) {
+    if (!cfg_.rate_guard_enabled) return 0;
+    const int err_pct = current_ring_fill_pct - cfg_.rate_guard_ring_target_pct;
+    if (std::abs(err_pct) <= cfg_.rate_guard_hysteresis_pct) {
         return 0;
     }
     const int raw_ppm = err_pct * 10;
-    return std::clamp(raw_ppm, -runtime_cfg_.rate_guard_max_ppm, runtime_cfg_.rate_guard_max_ppm);
+    return std::clamp(raw_ppm, -cfg_.rate_guard_max_ppm, cfg_.rate_guard_max_ppm);
 }
 
 void AxSnesAdapter::RecordFrameTelemetry(std::uint64_t frame_index,
@@ -374,12 +395,12 @@ bool AxSnesAdapter::SaveSnesControlsAtomic(const ax::ui::retro::SnesControllerMa
 
 bool AxSnesAdapter::AcquireDacLock() {
     if (dac_lock_fd_ >= 0) return true;
-    const fs::path lock_path(extras_.dac_lock_path);
+    const fs::path lock_path(cfg_.dac_lock_path);
     std::error_code ec;
     if (!lock_path.parent_path().empty()) {
         fs::create_directories(lock_path.parent_path(), ec);
     }
-    const int fd = ::open(extras_.dac_lock_path.c_str(), O_RDWR | O_CREAT, 0666);
+    const int fd = ::open(cfg_.dac_lock_path.c_str(), O_RDWR | O_CREAT, 0666);
     if (fd < 0) return false;
     if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
         ::close(fd);
@@ -398,23 +419,23 @@ void AxSnesAdapter::ReleaseDacLock() {
 }
 
 bool AxSnesAdapter::StageRomAndSavesToShm() {
-    if (!extras_.shm_staging_enabled) {
+    if (!cfg_.shm_staging_enabled) {
         staged_rom_path_ = rom_path_;
         return true;
     }
     std::error_code ec;
-    fs::create_directories(extras_.shm_rom_dir, ec);
-    fs::create_directories(extras_.shm_save_dir, ec);
+    fs::create_directories(cfg_.shm_rom_dir, ec);
+    fs::create_directories(cfg_.shm_save_dir, ec);
 
     const fs::path src_rom(rom_path_);
-    staged_rom_path_ = (fs::path(extras_.shm_rom_dir) / src_rom.filename()).string();
+    staged_rom_path_ = (fs::path(cfg_.shm_rom_dir) / src_rom.filename()).string();
     if (fs::exists(src_rom, ec)) {
         fs::copy_file(src_rom, staged_rom_path_, fs::copy_options::overwrite_existing, ec);
     }
 
     const fs::path sram_name = src_rom.stem().string() + ".srm";
-    const fs::path persistent_sram = fs::path(extras_.persistent_save_dir) / sram_name;
-    staged_sram_path_ = (fs::path(extras_.shm_save_dir) / sram_name).string();
+    const fs::path persistent_sram = fs::path(cfg_.persistent_save_dir) / sram_name;
+    staged_sram_path_ = (fs::path(cfg_.shm_save_dir) / sram_name).string();
     if (fs::exists(persistent_sram, ec)) {
         fs::copy_file(persistent_sram, staged_sram_path_, fs::copy_options::overwrite_existing, ec);
     }
@@ -422,7 +443,7 @@ bool AxSnesAdapter::StageRomAndSavesToShm() {
 }
 
 bool AxSnesAdapter::FlushSavesAtomicallyToStorage() {
-    if (!extras_.atomic_flush_on_exit || staged_sram_path_.empty()) {
+    if (!cfg_.atomic_flush_on_exit || staged_sram_path_.empty()) {
         return true;
     }
     std::error_code ec;
@@ -434,15 +455,15 @@ bool AxSnesAdapter::FlushSavesAtomicallyToStorage() {
     std::ostringstream buf;
     buf << in.rdbuf();
 
-    const fs::path dst = fs::path(extras_.persistent_save_dir) / fs::path(staged_sram_path_).filename();
+    const fs::path dst = fs::path(cfg_.persistent_save_dir) / fs::path(staged_sram_path_).filename();
     return WriteFileAtomic(dst.string(), buf.str());
 }
 
 void AxSnesAdapter::ApplyCoreAffinities() {
     cpu_set_t set;
     CPU_ZERO(&set);
-    if (extras_.housekeeping_core >= 0 && extras_.housekeeping_core < CPU_SETSIZE) {
-        CPU_SET(extras_.housekeeping_core, &set);
+    if (cfg_.housekeeping_core >= 0 && cfg_.housekeeping_core < CPU_SETSIZE) {
+        CPU_SET(cfg_.housekeeping_core, &set);
         (void)::pthread_setaffinity_np(::pthread_self(), sizeof(set), &set);
     }
 }
