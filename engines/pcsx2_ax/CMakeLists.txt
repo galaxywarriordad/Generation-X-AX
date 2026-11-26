@@ -93,6 +93,10 @@ using uint = unsigned int;
 using sptr = intptr_t;
 using uptr = uintptr_t;
 
+namespace Ps2MemSize {
+inline constexpr size_t GSregs = 0x2000;
+}
+
 #ifndef __fi
 #if defined(_MSC_VER)
 #define __fi __forceinline
@@ -273,13 +277,51 @@ inline double GetVerticalFrequency() { return 59.94; }
 "#pragma once
 #include <cstdint>
 
+struct GsSignalState {
+	bool queued = false;
+};
+
+struct GsFinishState {
+	bool gsFINISHFired = false;
+	bool gsFINISHPending = false;
+};
+
 class gifUnit {
 public:
-	void Reset() noexcept {}
+	GsSignalState gsSIGNAL{};
+	GsFinishState gsFINISH{};
+	void Reset() noexcept {
+		gsSIGNAL.queued = false;
+		gsFINISH.gsFINISHFired = false;
+		gsFINISH.gsFINISHPending = false;
+	}
 	bool Freeze() noexcept { return true; }
 };
 
 inline gifUnit g_gifUnit{};
+")
+
+	pcsx2_ax_write_stub("GS.h"
+"#pragma once
+#include <cstdint>
+#include \"Common.h\"
+
+struct tGS_CSR {
+	uint64_t raw = 0;
+	bool RESET() const noexcept { return (raw & 0x2ULL) != 0; }
+};
+
+struct tGS_IMR {
+	uint64_t raw = 0;
+	void reset() noexcept { raw = 0; }
+};
+
+struct tCSRreg {
+	void Reset() noexcept {}
+};
+
+inline tGS_IMR GSIMR{};
+inline tCSRreg CSRreg{};
 ")
 
 	pcsx2_ax_write_stub("Host.h"
@@ -288,7 +330,10 @@ inline gifUnit g_gifUnit{};
 #include <string>
 #include <string_view>
 
-class SettingsInterface;
+class SettingsInterface {
+public:
+	virtual ~SettingsInterface() = default;
+};
 
 namespace Host {
 
@@ -335,6 +380,8 @@ inline void SetInputSettingsLayer(SettingsInterface*, std::unique_lock<std::mute
 #include <functional>
 
 enum class GSVideoMode { Uninitialized = 0, NTSC, PAL };
+using GS_VideoMode = GSVideoMode;
+
 inline GSVideoMode gsVideoMode = GSVideoMode::Uninitialized;
 inline bool gsIsInterlaced = false;
 inline void GSgetInternalResolution(int* width, int* height) noexcept {
@@ -342,12 +389,12 @@ inline void GSgetInternalResolution(int* width, int* height) noexcept {
 	if (height) *height = 480;
 }
 inline int GSgetDisplayMode() noexcept { return 0; }
-inline double GetVerticalFrequency() { return 59.94; }
 inline float GSGetHostRefreshRate() noexcept { return 60.0f; }
 
 namespace MTGS {
 inline void WaitGS(bool = false) noexcept {}
 inline void ReleaseGS() noexcept {}
+inline void ResetGS(bool = false) noexcept {}
 inline void ApplySettings() noexcept {}
 inline void UpdateVSyncMode() noexcept {}
 inline void GameChanged() noexcept {}
@@ -389,6 +436,14 @@ static constexpr size_t HOST_PAGE_SIZE = 4096;
 	pcsx2_ax_write_stub("common/Assertions.h"
 "#pragma once
 #include \"common/Console.h\"
+")
+
+	pcsx2_ax_write_stub("common/EnumOps.h"
+"#pragma once
+#include <type_traits>
+
+template <typename E>
+concept ScopedEnum = std::is_enum_v<E>;
 ")
 
 	pcsx2_ax_write_stub("CDVD/CDVDcommon.h"
@@ -576,6 +631,7 @@ inline ConsoleStream DbgCon{};
 #define WARNING_LOG(...) do { Console.Warning(__VA_ARGS__); } while (0)
 #define INFO_LOG(...) do { Console.WriteLn(__VA_ARGS__); } while (0)
 #define DEV_LOG(...) do { DevCon.WriteLn(__VA_ARGS__); } while (0)
+#define GUNIT_WARN(...) do { Console.Warning(__VA_ARGS__); } while (0)
 #define pxAssert(expr) do { (void)sizeof(expr); } while (0)
 #define pxAssertMsg(expr, msg) do { (void)sizeof(expr); (void)sizeof(msg); } while (0)
 #define pxAssertRel(expr, msg) do { (void)sizeof(expr); (void)sizeof(msg); } while (0)
