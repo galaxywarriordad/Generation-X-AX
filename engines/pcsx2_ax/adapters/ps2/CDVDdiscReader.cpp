@@ -13,16 +13,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstring>
-#include <mutex>
 #include <thread>
 
 void (*newDiscCB)();
 
-static std::mutex s_keepalive_lock;
-static std::condition_variable s_keepalive_cv;
+static std::atomic<uint32_t> s_keepalive_epoch{0u};
 static std::thread s_keepalive_thread;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -123,11 +120,21 @@ static void keepAliveThread()
 	u8 throwaway[2352];
 
 	std::printf(" * CDVD: KeepAlive thread started...\n");
-	std::unique_lock<std::mutex> guard(s_keepalive_lock);
 
-	while (!s_keepalive_cv.wait_for(guard, std::chrono::seconds(30),
-		[]() noexcept { return !s_keepalive_is_open.load(std::memory_order_acquire); }))
+	while (s_keepalive_is_open.load(std::memory_order_acquire))
 	{
+		const uint32_t observed_epoch = s_keepalive_epoch.load(std::memory_order_acquire);
+
+		for (int sec = 0; sec < 30 && s_keepalive_is_open.load(std::memory_order_acquire); ++sec)
+		{
+			if (s_keepalive_epoch.load(std::memory_order_acquire) != observed_epoch)
+				break;
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+		}
+
+		if (!s_keepalive_is_open.load(std::memory_order_acquire))
+			break;
+
 		if (!src)
 			continue;
 
@@ -137,31 +144,29 @@ static void keepAliveThread()
 			(void)src->ReadSectors2352(g_last_sector_block_lsn, 1, throwaway);
 	}
 
+	s_keepalive_epoch.fetch_add(1u, std::memory_order_acq_rel);
+	s_keepalive_epoch.notify_all();
 	std::printf(" * CDVD: KeepAlive thread finished.\n");
 }
 
 bool StartKeepAliveThread()
 {
-	if (!s_keepalive_is_open.load(std::memory_order_acquire))
+	if (!s_keepalive_is_open.exchange(true, std::memory_order_acq_rel))
 	{
-		s_keepalive_is_open.store(true, std::memory_order_release);
+		s_keepalive_epoch.fetch_add(1u, std::memory_order_acq_rel);
 		s_keepalive_thread = std::thread(keepAliveThread);
 	}
-
-	return s_keepalive_is_open.load(std::memory_order_acquire);
+	return true;
 }
 
 void StopKeepAliveThread()
 {
-	if (!s_keepalive_thread.joinable())
-		return;
+	s_keepalive_is_open.store(false, std::memory_order_release);
+	s_keepalive_epoch.fetch_add(1u, std::memory_order_acq_rel);
+	s_keepalive_epoch.notify_all();
 
-	{
-		std::lock_guard<std::mutex> guard(s_keepalive_lock);
-		s_keepalive_is_open.store(false, std::memory_order_release);
-	}
-	s_keepalive_cv.notify_one();
-	s_keepalive_thread.join();
+	if (s_keepalive_thread.joinable())
+		s_keepalive_thread.join();
 }
 
 static bool DISCopen(std::string filename, Error* error)
