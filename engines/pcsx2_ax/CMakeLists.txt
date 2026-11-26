@@ -140,7 +140,12 @@ enum class SavestateCompressionLevel { Low, Medium, High, VeryHigh };
 
 struct Pcsx2Config {
     struct CpuOptions {
-        struct RecompilerOptions { bool EnableFastmem = true; bool EnableVU0 = true; bool EnableVU1 = true; } Recompiler;
+        struct RecompilerOptions {
+            bool EnableFastmem = true;
+            bool EnableVU0 = true;
+            bool EnableVU1 = true;
+            bool operator==(const RecompilerOptions&) const = default;
+        } Recompiler;
         int ExtraMemory = 0;
         uint32_t FPUFPCR = 0;
         bool operator==(const CpuOptions&) const = default;
@@ -262,6 +267,66 @@ inline void intUpdateCPUCycles() {}
 inline void intEventTest() {}
 inline void UpdateVSyncRate(bool) {}
 inline double GetVerticalFrequency() { return 59.94; }
+")
+
+    pcsx2_ax_write_stub("Gif_Unit.h"
+"#pragma once
+#include <cstdint>
+
+class gifUnit {
+public:
+    void Reset() noexcept {}
+    bool Freeze() noexcept { return true; }
+};
+
+inline gifUnit g_gifUnit{};
+")
+
+    pcsx2_ax_write_stub("Host.h"
+"#pragma once
+#include <mutex>
+#include <string>
+#include <string_view>
+
+class SettingsInterface;
+
+namespace Host {
+
+inline constexpr float OSD_QUICK_DURATION = 2.0f;
+inline constexpr float OSD_WARNING_DURATION = 5.0f;
+
+inline void ReportErrorAsync(std::string_view, std::string_view) {}
+inline void OnGameChanged(std::string_view, std::string_view, std::string_view, std::string_view, uint32_t, uint32_t) {}
+inline void OnVMStarting() {}
+inline void OnVMStarted() {}
+inline void OnVMDestroyed() {}
+inline void OnVMPaused() {}
+inline void OnVMResumed() {}
+inline void AddIconOSDMessage(std::string_view, std::string_view, std::string_view, float) {}
+inline void AddKeyedOSDMessage(std::string_view, std::string, float) {}
+inline void RemoveKeyedOSDMessage(std::string_view) {}
+inline void RequestResizeHostDisplay(int, int) {}
+inline void RequestVMShutdown(bool) {}
+inline void PumpMessagesOnCPUThread() {}
+inline std::unique_lock<std::mutex> GetSettingsLock() {
+    static std::mutex m;
+    return std::unique_lock<std::mutex>(m);
+}
+inline SettingsInterface* GetSettingsInterface() noexcept { return nullptr; }
+inline bool GetBaseBoolSettingValue(std::string_view, std::string_view, bool def = false) { return def; }
+inline void SetDefaultUISettings(SettingsInterface&) {}
+inline void LoadSettings(SettingsInterface&, std::unique_lock<std::mutex>&) {}
+inline void CheckForSettingsChanges(const void*) {}
+
+namespace Internal {
+inline SettingsInterface* GetBaseSettingsLayer() noexcept { return nullptr; }
+inline SettingsInterface* GetGameSettingsLayer() noexcept { return nullptr; }
+inline void SetGameSettingsLayer(SettingsInterface*, std::unique_lock<std::mutex>&) {}
+inline SettingsInterface* GetInputSettingsLayer() noexcept { return nullptr; }
+inline void SetInputSettingsLayer(SettingsInterface*, std::unique_lock<std::mutex>&) {}
+} // namespace Internal
+
+} // namespace Host
 ")
 
     pcsx2_ax_write_stub("CDVD/CDVDcommon.h"
