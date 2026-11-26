@@ -83,6 +83,9 @@ target_include_directories(ax_pcsx2_core
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${PCSX2_AX_CORE_DIR}"
+        "${PCSX2_AX_CORE_DIR}/pcsx2"
+        "${PCSX2_AX_CORE_DIR}/common"
+        "${PCSX2_AX_CORE_DIR}/CDVD"
 )
 
 target_compile_definitions(ax_pcsx2_core
