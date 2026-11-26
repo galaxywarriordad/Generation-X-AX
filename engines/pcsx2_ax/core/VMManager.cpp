@@ -39,7 +39,6 @@
 #include "cpuinfo.h"
 #include "fmt/format.h"
 
-#include <array>
 #include <utility>
 
 #ifdef _WIN32
@@ -51,64 +50,74 @@ namespace pcsx2_ax::vm_bridge {
 
 namespace {
 
-// Double-buffered cache-line-aligned epoch snapshots for lock-free snapshot reads
-struct alignas(pcsx2_ax::core::kCacheLineBytes) SnapshotSlot {
-	pcsx2_ax::core::ModeEpochSnapshot snap{};
-};
+std::atomic<pcsx2_ax::core::VmContext*> g_active_ctx{nullptr};
+std::mutex g_media_lock{};
 
-struct BridgeState {
-	std::atomic<uint64_t> epoch{1u};
-	std::atomic<uint32_t> active_slot{0u};
-	std::array<SnapshotSlot, 2> slots{};
-
-	std::atomic<pcsx2_ax::core::IHardwareModeAdapter*> adapter{nullptr};
-	std::atomic<bool> media_ready{false};
-	std::atomic<bool> memcard_busy{false};
-
-	std::mutex media_path_mtx{};
-	std::string media_path{};
-};
-
-BridgeState& bridge_state() noexcept
+void publish_snapshot(pcsx2_ax::core::VmContext& ctx, uint64_t new_epoch) noexcept
 {
-	static BridgeState instance{};
-	return instance;
-}
-
-void publish_snapshot(BridgeState& st, uint64_t new_epoch) noexcept
-{
-	const uint32_t next_slot = 1u - st.active_slot.load(std::memory_order_acquire);
-	auto* adp = st.adapter.load(std::memory_order_acquire);
-	st.slots[next_slot].snap = (adp != nullptr)
+	const uint32_t next_slot = 1u - ctx.active_snapshot_slot.load(std::memory_order_acquire);
+	auto* adp = ctx.adapter.load(std::memory_order_acquire);
+	ctx.snapshots[next_slot] = (adp != nullptr)
 		? adp->capture_snapshot(new_epoch)
 		: pcsx2_ax::core::ModeEpochSnapshot{.epoch = new_epoch};
-	st.active_slot.store(next_slot, std::memory_order_release);
+	ctx.active_snapshot_slot.store(next_slot, std::memory_order_release);
+}
+
+[[nodiscard]] uint64_t compute_crc64_sample(const pcsx2_ax::core::FrameTelemetrySample& s) noexcept
+{
+	uint64_t h = 0xcbf29ce484222325ULL;
+	auto mix = [&h](uint64_t v) noexcept {
+		h ^= v;
+		h *= 0x100000001b3ULL;
+	};
+	mix(s.frame_index);
+	mix(s.epoch);
+	mix(s.ee_cycles);
+	mix(s.vu1_cycles);
+	mix(s.gs_cycles);
+	mix(static_cast<uint64_t>(s.cdvd_cache_hits) | (static_cast<uint64_t>(s.cdvd_cache_misses) << 32));
+	return h;
 }
 
 } // namespace
 
-uint64_t current_epoch() noexcept
+pcsx2_ax::core::VmContext& default_context() noexcept
 {
-	return bridge_state().epoch.load(std::memory_order_acquire);
+	static pcsx2_ax::core::VmContext fallback{};
+	return fallback;
 }
 
-uint64_t advance_epoch() noexcept
+void set_active_context(pcsx2_ax::core::VmContext* ctx) noexcept
 {
-	auto& st = bridge_state();
-	const uint64_t next = st.epoch.fetch_add(1u, std::memory_order_acq_rel) + 1u;
-	publish_snapshot(st, next);
+	g_active_ctx.store(ctx, std::memory_order_release);
+}
+
+pcsx2_ax::core::VmContext& active_context() noexcept
+{
+	auto* ctx = g_active_ctx.load(std::memory_order_acquire);
+	return (ctx != nullptr) ? *ctx : default_context();
+}
+
+uint64_t current_epoch(const pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	return ctx.epoch.load(std::memory_order_acquire);
+}
+
+uint64_t advance_epoch(pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	const uint64_t next = ctx.epoch.fetch_add(1u, std::memory_order_acq_rel) + 1u;
+	publish_snapshot(ctx, next);
 	return next;
 }
 
-pcsx2_ax::core::ModeEpochSnapshot current_snapshot() noexcept
+pcsx2_ax::core::ModeEpochSnapshot current_snapshot(const pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	auto& st = bridge_state();
 	for (;;)
 	{
-		const uint64_t e1 = st.epoch.load(std::memory_order_acquire);
-		const uint32_t slot = st.active_slot.load(std::memory_order_acquire);
-		pcsx2_ax::core::ModeEpochSnapshot out = st.slots[slot].snap;
-		const uint64_t e2 = st.epoch.load(std::memory_order_acquire);
+		const uint64_t e1 = ctx.epoch.load(std::memory_order_acquire);
+		const uint32_t slot = ctx.active_snapshot_slot.load(std::memory_order_acquire);
+		pcsx2_ax::core::ModeEpochSnapshot out = ctx.snapshots[slot];
+		const uint64_t e2 = ctx.epoch.load(std::memory_order_acquire);
 		if (e1 == e2)
 		{
 			out.epoch = e2;
@@ -117,80 +126,102 @@ pcsx2_ax::core::ModeEpochSnapshot current_snapshot() noexcept
 	}
 }
 
-void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter) noexcept
+void record_telemetry(const pcsx2_ax::core::FrameTelemetrySample& sample, pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	auto& st = bridge_state();
-	st.adapter.store(adapter, std::memory_order_release);
-	(void)advance_epoch();
+	pcsx2_ax::core::FrameTelemetrySample stamped = sample;
+	stamped.epoch = current_epoch(ctx);
+	stamped.framebuffer_crc64 = compute_crc64_sample(stamped);
+	if (stamped.vram_allocated_gib >= pcsx2_ax::core::kVramPruneGib)
+		stamped.vram_prune_triggered = true;
+
+	const uint64_t idx = ctx.telemetry_write_idx.fetch_add(1u, std::memory_order_acq_rel);
+	ctx.telemetry_ring[idx & pcsx2_ax::core::kTelemetryRingMask] = stamped;
+	std::atomic_thread_fence(std::memory_order_release);
 }
 
-pcsx2_ax::core::IHardwareModeAdapter* get_mode_adapter() noexcept
+bool read_latest_telemetry(pcsx2_ax::core::FrameTelemetrySample& out_sample,
+                         const pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	return bridge_state().adapter.load(std::memory_order_acquire);
+	const uint64_t idx = ctx.telemetry_write_idx.load(std::memory_order_acquire);
+	if (idx == 0u)
+		return false;
+
+	out_sample = ctx.telemetry_ring[(idx - 1u) & pcsx2_ax::core::kTelemetryRingMask];
+	return true;
 }
 
-void set_media_path(std::string path, bool ready)
+void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter, pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	auto& st = bridge_state();
+	ctx.adapter.store(adapter, std::memory_order_release);
+	(void)advance_epoch(ctx);
+}
+
+pcsx2_ax::core::IHardwareModeAdapter* get_mode_adapter(const pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	return ctx.adapter.load(std::memory_order_acquire);
+}
+
+void set_media_path(std::string path, bool ready, pcsx2_ax::core::VmContext& ctx)
+{
 	{
-		std::lock_guard<std::mutex> lock(st.media_path_mtx);
-		st.media_path = std::move(path);
+		std::lock_guard<std::mutex> lock(g_media_lock);
+		ctx.media_path = std::move(path);
 	}
-	st.media_ready.store(ready, std::memory_order_release);
-	(void)advance_epoch();
+	ctx.media_ready.store(ready, std::memory_order_release);
+	(void)advance_epoch(ctx);
 }
 
-const std::string& get_media_path() noexcept
+const std::string& get_media_path(const pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	return bridge_state().media_path;
+	return ctx.media_path;
 }
 
-bool is_media_ready() noexcept
+bool is_media_ready(const pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	return bridge_state().media_ready.load(std::memory_order_acquire);
+	return ctx.media_ready.load(std::memory_order_acquire);
 }
 
-void set_memcard_busy(bool busy) noexcept
+void set_memcard_busy(bool busy, pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	bridge_state().memcard_busy.store(busy, std::memory_order_release);
+	ctx.memcard_busy.store(busy, std::memory_order_release);
 }
 
-bool is_memcard_busy() noexcept
+bool is_memcard_busy(const pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	return bridge_state().memcard_busy.load(std::memory_order_acquire);
+	return ctx.memcard_busy.load(std::memory_order_acquire);
 }
 
-bool init_mode_subsystems()
+bool init_mode_subsystems(pcsx2_ax::core::VmContext& ctx)
 {
-	auto* adapter = get_mode_adapter();
-	(void)advance_epoch();
+	auto* adapter = get_mode_adapter(ctx);
+	(void)advance_epoch(ctx);
 	return (adapter != nullptr) ? adapter->initialize() : true;
 }
 
-bool reset_mode_subsystems()
+bool reset_mode_subsystems(pcsx2_ax::core::VmContext& ctx)
 {
-	auto* adapter = get_mode_adapter();
-	(void)advance_epoch();
+	auto* adapter = get_mode_adapter(ctx);
+	(void)advance_epoch(ctx);
 	return (adapter != nullptr) ? adapter->reset() : true;
 }
 
-void shutdown_mode_subsystems() noexcept
+void shutdown_mode_subsystems(pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	auto* adapter = get_mode_adapter();
-	(void)advance_epoch();
+	auto* adapter = get_mode_adapter(ctx);
+	(void)advance_epoch(ctx);
 	if (adapter != nullptr)
 		adapter->shutdown();
 }
 
-void notify_mode_vsync() noexcept
+void notify_mode_vsync(pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	if (auto* adapter = get_mode_adapter(); adapter != nullptr)
+	if (auto* adapter = get_mode_adapter(ctx); adapter != nullptr)
 		adapter->on_vsync();
 }
 
-pcsx2_ax::core::BiosDescriptor current_bios_info() noexcept
+pcsx2_ax::core::BiosDescriptor current_bios_info(const pcsx2_ax::core::VmContext& ctx) noexcept
 {
-	return current_snapshot().bios;
+	return current_snapshot(ctx).bios;
 }
 
 } // namespace pcsx2_ax::vm_bridge
@@ -818,7 +849,16 @@ void VMManager::Reset()
 
 void VMManager::Internal::VSyncOnCPUThread()
 {
-	pcsx2_ax::vm_bridge::notify_mode_vsync();
+	static uint64_t s_frame_counter = 0u;
+	auto& ctx = pcsx2_ax::vm_bridge::active_context();
+	pcsx2_ax::vm_bridge::notify_mode_vsync(ctx);
+
+	pcsx2_ax::core::FrameTelemetrySample sample{};
+	sample.frame_index = ++s_frame_counter;
+	sample.ee_cycles = static_cast<uint64_t>(EEsCycle);
+	sample.gs_cycles = static_cast<uint64_t>(EEoCycle);
+	pcsx2_ax::vm_bridge::record_telemetry(sample, ctx);
+
 	Patch::ApplyVsyncPatches();
 
 	if (g_frame_advance_count > 0 && --g_frame_advance_count == 0)
