@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Common.h"
+#include "VMManager_Internal.h"
 
 #include <float.h>
 
@@ -12,35 +13,68 @@
 #include "DebugTools/DebugInterface.h"
 #include "DebugTools/Breakpoints.h"
 #include "Host.h"
-#include "VMManager.h"
 
 #include "fmt/format.h"
 
 namespace pcsx2_ax::r5900 {
 
-inline const pcsx2_ax::core::IHardwareModeAdapter*& active_mode_adapter() noexcept
+namespace {
+
+struct R5900BridgeState {
+	const pcsx2_ax::core::IHardwareModeAdapter* adapter{nullptr};
+	uint64_t bound_epoch{0u};
+	u32 ee_thread_list_addr{0u};
+};
+
+inline R5900BridgeState& bridge_state() noexcept
 {
-	static const pcsx2_ax::core::IHardwareModeAdapter* adapter = nullptr;
-	return adapter;
+	static R5900BridgeState state{};
+	return state;
 }
 
-inline u32& ee_thread_list_addr() noexcept
+} // namespace
+
+inline void set_mode_adapter(const pcsx2_ax::core::IHardwareModeAdapter* adapter,
+                             const pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context()) noexcept
 {
-	static u32 addr = 0;
-	return addr;
+	auto& st = bridge_state();
+	st.adapter = adapter;
+	st.bound_epoch = pcsx2_ax::vm_bridge::current_epoch(ctx);
+	st.ee_thread_list_addr = 0u;
 }
 
-inline void set_mode_adapter(const pcsx2_ax::core::IHardwareModeAdapter* adapter) noexcept
+[[nodiscard]] inline const pcsx2_ax::core::IHardwareModeAdapter* active_mode_adapter(
+	const pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context()) noexcept
 {
-	active_mode_adapter() = adapter;
-	ee_thread_list_addr() = 0;
+	auto& st = bridge_state();
+	const uint64_t now_epoch = pcsx2_ax::vm_bridge::current_epoch(ctx);
+	if (st.bound_epoch != now_epoch)
+	{
+		st.bound_epoch = now_epoch;
+		st.ee_thread_list_addr = 0u;
+		st.adapter = pcsx2_ax::vm_bridge::get_mode_adapter(ctx);
+	}
+	return (st.adapter != nullptr) ? st.adapter : pcsx2_ax::vm_bridge::get_mode_adapter(ctx);
 }
 
-[[nodiscard]] inline pcsx2_ax::core::BiosDescriptor current_bios_descriptor() noexcept
+inline u32& ee_thread_list_addr(const pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context()) noexcept
 {
-	if (const auto* adapter = active_mode_adapter(); adapter != nullptr)
+	auto& st = bridge_state();
+	const uint64_t now_epoch = pcsx2_ax::vm_bridge::current_epoch(ctx);
+	if (st.bound_epoch != now_epoch)
+	{
+		st.bound_epoch = now_epoch;
+		st.ee_thread_list_addr = 0u;
+	}
+	return st.ee_thread_list_addr;
+}
+
+[[nodiscard]] inline pcsx2_ax::core::BiosDescriptor current_bios_descriptor(
+	const pcsx2_ax::core::VmContext& ctx = pcsx2_ax::vm_bridge::active_context()) noexcept
+{
+	if (const auto* adapter = active_mode_adapter(ctx); adapter != nullptr)
 		return adapter->bios_descriptor();
-	return pcsx2_ax::core::BiosDescriptor{};
+	return pcsx2_ax::vm_bridge::current_bios_info(ctx);
 }
 
 } // namespace pcsx2_ax::r5900
