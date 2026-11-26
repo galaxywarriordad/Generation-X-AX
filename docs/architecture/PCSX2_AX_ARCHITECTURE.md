@@ -72,8 +72,13 @@ During the initial bootstrap and CMake build verification stage, when `PCSX2_AX_
 
 ### 📊 Phase 5: Control Baseline vs. `Skylake` \+ `ThinLTO` \+ Gameplay PGO 🎯
 
-1. **Capture Stage A Control Baseline:** Benchmark unpinned/control runs across both `--mode ps2` and `--mode coh-h` (`PCSX2x6`) workloads using our existing telemetry/regression checks.  
-2. **Apply Guarded `-march=skylake` \+ `ThinLTO` \+ 3-Stage PGO:** Compile with `-march=skylake` (`AVX2`, `FMA`, `BMI1`/`BMI2` on non-SMT physical cores, avoiding `-march=native` portability traps and I-cache bloat), collect profiles across active PS2 and System 246/256 gameplay (not idle menus), and merge via `llvm-profdata` (`-fprofile-use`) before locking release artifacts.
+1. **Capture Stage A Control Baseline:** Benchmark unpinned/control runs across both `--mode ps2` and `--mode coh-h` (`PCSX2x6`) workloads using our existing telemetry/regression checks.
+
+### **🛡️ Hardening Items \#1 & \#2: Cross-Thread Epoch/Lifecycle Ordering & Prototype Stub/Build-System Drift Guardrails 🔒**
+
+2. **Cross-Thread Lifecycle & Epoch Ordering Across `VmContext`, `SaveState`, and `VMManager`:** Strictly serialize and guard mode adapter transitions relative to active `SaveState` / `ACSRAM` / NVRAM commits, ensuring temporary `.tmp` save files are automatically cleaned up on any early failure path (including failed `fsync` or epoch mismatches). Write and validate actual archive payloads through `SaveScratchArena` rather than leaving placeholder arguments, and prevent `capture_snapshot` from racing with adapter teardown.  
+3. **Prototype Stub & Build-System Drift Guardrails (`PCSX2_AX_PLANNING_ONLY=ON` vs. Full Upstream Headers):** Enforce a strict no-stub-leak-into-release check so prototype stubs generated in `${CMAKE_CURRENT_BINARY_DIR}/proto_inc` cannot ship into non-planning or production release builds. Gate platform-specific or GUI/Discord headers (such as `RedtapeWindows.h`, `ImGui`, and `discord_rpc.h`) behind explicit CMake feature options so headless **`Piccolo-AX`** (`Linux 6.12-rt`, `<= 524288 KB` / `512 MB` `toram` `EROFS` `lz4hc,9`) builds remain completely lean and free of unnecessary bloat.  
+4. **Apply Guarded `-march=skylake` \+ `ThinLTO` \+ 3-Stage PGO:** Compile with `-march=skylake` (`AVX2`, `FMA`, `BMI1`/`BMI2` on non-SMT physical cores, avoiding `-march=native` portability traps and I-cache bloat), collect profiles across active PS2 and System 246/256 gameplay (not idle menus), and merge via `llvm-profdata` (`-fprofile-use`) before locking release artifacts.
 
 ---
 
