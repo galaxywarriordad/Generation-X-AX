@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team & The Silicon Preservation Society
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "VMManager_Internal.h"
+
 #include "Achievements.h"
 #include "BuildVersion.h"
 #include "Counters.h"
@@ -11,7 +13,6 @@
 #include "GS.h"
 #include "GSDumpReplayer.h"
 #include "Host.h"
-#include "IHardwareModeAdapter.hpp"
 #include "ImGui/FullscreenUI.h"
 #include "ImGui/ImGuiOverlays.h"
 #include "Input/InputManager.h"
@@ -27,23 +28,18 @@
 #include "SPU2/spu2.h"
 #include "USB/USB.h"
 #include "Vif_Dynarec.h"
-#include "VMManager.h"
 
 #include "common/Console.h"
-#include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/FPControl.h"
 #include "common/ScopedGuard.h"
-#include "common/Threading.h"
 #include "common/Timer.h"
 #include "common/emitter/x86emitter.h"
 
 #include "cpuinfo.h"
 #include "fmt/format.h"
 
-#include <atomic>
-#include <mutex>
-#include <string>
+#include <utility>
 
 #ifdef _WIN32
 #include "common/RedtapeWindows.h"
@@ -80,15 +76,8 @@ inline bool& active_memcard_busy() noexcept
 
 } // namespace
 
-void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter) noexcept
-{
-	active_adapter() = adapter;
-}
-
-[[nodiscard]] pcsx2_ax::core::IHardwareModeAdapter* get_mode_adapter() noexcept
-{
-	return active_adapter();
-}
+void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter) noexcept { active_adapter() = adapter; }
+pcsx2_ax::core::IHardwareModeAdapter* get_mode_adapter() noexcept { return active_adapter(); }
 
 void set_media_path(std::string path, bool ready)
 {
@@ -96,38 +85,22 @@ void set_media_path(std::string path, bool ready)
 	active_disc_ready() = ready;
 }
 
-[[nodiscard]] const std::string& get_media_path() noexcept
+const std::string& get_media_path() noexcept { return active_disc_file(); }
+bool is_media_ready() noexcept { return active_disc_ready(); }
+
+void set_memcard_busy(bool busy) noexcept { active_memcard_busy() = busy; }
+bool is_memcard_busy() noexcept { return active_memcard_busy(); }
+
+bool init_mode_subsystems()
 {
-	return active_disc_file();
+	auto* adapter = active_adapter();
+	return (adapter != nullptr) ? adapter->initialize() : true;
 }
 
-[[nodiscard]] bool is_media_ready() noexcept
+bool reset_mode_subsystems()
 {
-	return active_disc_ready();
-}
-
-void set_memcard_busy(bool busy) noexcept
-{
-	active_memcard_busy() = busy;
-}
-
-[[nodiscard]] bool is_memcard_busy() noexcept
-{
-	return active_memcard_busy();
-}
-
-[[nodiscard]] bool init_mode_subsystems()
-{
-	if (auto* adapter = active_adapter(); adapter != nullptr)
-		return adapter->initialize();
-	return true;
-}
-
-[[nodiscard]] bool reset_mode_subsystems()
-{
-	if (auto* adapter = active_adapter(); adapter != nullptr)
-		return adapter->reset();
-	return true;
+	auto* adapter = active_adapter();
+	return (adapter != nullptr) ? adapter->reset() : true;
 }
 
 void shutdown_mode_subsystems() noexcept
@@ -142,68 +115,16 @@ void notify_mode_vsync() noexcept
 		adapter->on_vsync();
 }
 
-[[nodiscard]] pcsx2_ax::core::BiosDescriptor current_bios_info() noexcept
+pcsx2_ax::core::BiosDescriptor current_bios_info() noexcept
 {
-	if (auto* adapter = active_adapter(); adapter != nullptr)
+	if (const auto* adapter = active_adapter(); adapter != nullptr)
 		return adapter->bios_descriptor();
 	return pcsx2_ax::core::BiosDescriptor{};
 }
 
 } // namespace pcsx2_ax::vm_bridge
 
-namespace VMManager {
-
-extern std::atomic<VMState> g_vm_state;
-extern bool g_cpu_implementation_changed;
-extern Threading::ThreadHandle g_vm_thread_handle;
-extern std::string g_elf_override;
-extern std::string g_game_settings_override;
-extern u32 g_frame_advance_count;
-extern bool g_fast_boot_requested;
-extern bool g_gs_open_on_initialize;
-extern LimiterModeType g_limiter_mode;
-extern float g_target_speed;
-extern bool g_target_speed_can_sync_to_host;
-extern bool g_target_speed_synced_to_host;
-extern bool g_use_vsync_for_timing;
-
-void LogCPUCapabilities();
-void InitializeCPUProviders();
-void ShutdownCPUProviders();
-void UpdateCPUImplementations();
-bool AutoDetectSource(const std::string& filename, Error* error = nullptr);
-void UpdateDiscDetails(bool booting);
-void ClearDiscDetails();
-void HandleELFChange(bool verbose_patches_if_changed);
-void ClearELFInfo();
-void ReportGameChangeToHost();
-bool HasBootedELF();
-void LoadSettings();
-void ApplySettings();
-void ApplyCoreSettings();
-bool UpdateGameSettingsLayer();
-void UpdateInhibitScreensaver(bool allow);
-void AccumulateSessionPlaytime();
-void ResetResumeTimestamp();
-void SaveSessionTime(const std::string& prev_serial);
-void ReloadPINE();
-float GetTargetSpeedForLimiterMode(LimiterModeType mode);
-void ResetFrameLimiter();
-void SetTimerResolutionIncreased(bool enabled);
-void SetEmuThreadAffinities();
-void InitializeDiscordPresence();
-void ShutdownDiscordPresence();
-void UpdateDiscordPresence(bool update_session_time);
-void PollDiscordPresence();
-std::string GetCurrentSaveStateFileName(s32 slot, bool backup = false);
-bool DoLoadState(const char* filename, Error* error = nullptr);
-void DoSaveState(const char* filename, s32 slot_for_message, bool zip_on_thread, bool backup_old_state,
-                 std::function<void(const std::string&)> error_callback);
-void WaitForSaveStateFlush();
-
-} // namespace VMManager
-
-std::atomic<VMState> VMManager::g_vm_state{VMState::Shutdown};
+std::atomic<VMManager::VMState> VMManager::g_vm_state{VMState::Shutdown};
 bool VMManager::g_cpu_implementation_changed = false;
 Threading::ThreadHandle VMManager::g_vm_thread_handle;
 std::string VMManager::g_elf_override;
@@ -225,21 +146,15 @@ bool VMManager::PerformEarlyHardwareChecks(const char** error)
 
 #if defined(ARCH_X86)
 	cpuinfo_initialize();
-
 	if (!cpuinfo_has_x86_sse4_1())
 	{
-		*error =
-			"PCSX2 requires the Streaming SIMD 4.1 Extensions instruction set, which your CPU does not support.\n\n"
-			COMMON_DOWNLOAD_MESSAGE;
+		*error = "PCSX2 requires SSE4.1 support.\n\n" COMMON_DOWNLOAD_MESSAGE;
 		return false;
 	}
-
 #if _M_SSE >= 0x0501
 	if (!cpuinfo_has_x86_avx2())
 	{
-		*error = "This build of PCSX2 requires the Advanced Vector Extensions 2 instruction set, which your CPU does "
-				 "not support.\n\n"
-				 COMMON_DOWNLOAD_MESSAGE;
+		*error = "This build requires AVX2 support.\n\n" COMMON_DOWNLOAD_MESSAGE;
 		return false;
 	}
 #endif
@@ -247,7 +162,7 @@ bool VMManager::PerformEarlyHardwareChecks(const char** error)
 	const size_t runtime_host_page_size = HostSys::GetRuntimePageSize();
 	if (__pagesize != runtime_host_page_size)
 	{
-		*error = "Page size mismatch. This build cannot run on your system.\n\n" COMMON_DOWNLOAD_MESSAGE;
+		*error = "Page size mismatch.\n\n" COMMON_DOWNLOAD_MESSAGE;
 		return false;
 	}
 #endif
@@ -256,10 +171,7 @@ bool VMManager::PerformEarlyHardwareChecks(const char** error)
 	return true;
 }
 
-VMState VMManager::GetState()
-{
-	return g_vm_state.load(std::memory_order_acquire);
-}
+VMManager::VMState VMManager::GetState() { return g_vm_state.load(std::memory_order_acquire); }
 
 void VMManager::SetState(VMState state)
 {
@@ -333,7 +245,6 @@ bool VMManager::Internal::CPUThreadInitialize()
 #endif
 
 	FPControlRegister::SetCurrent(FPControlRegister::GetDefault());
-
 	if (!cpuinfo_initialize())
 		Console.Error("cpuinfo_initialize() failed.");
 
@@ -357,7 +268,6 @@ bool VMManager::Internal::CPUThreadInitialize()
 		Achievements::Initialize();
 
 	ReloadPINE();
-
 	if (EmuConfig.EnableDiscordPresence)
 		InitializeDiscordPresence();
 
@@ -373,7 +283,6 @@ void VMManager::Internal::CPUThreadShutdown()
 	WaitForSaveStateFlush();
 
 	PerformanceMetrics::SetCPUThread(Threading::ThreadHandle());
-
 	USBshutdown();
 	MTGS::ShutdownThread();
 	GSJoinSnapshotThreads();
@@ -408,7 +317,6 @@ void VMManager::ShutdownCPUProviders()
 		dVifRelease(1);
 		dVifRelease(0);
 	}
-
 #ifdef _M_X86
 	CpuMicroVU1.Shutdown();
 	CpuMicroVU0.Shutdown();
@@ -430,7 +338,6 @@ void VMManager::UpdateCPUImplementations()
 		CpuVU1 = &CpuIntVU1;
 		return;
 	}
-
 #ifdef _M_X86
 	Cpu = CHECK_EEREC ? &recCpu : &intCpu;
 	psxCpu = CHECK_IOPREC ? &psxRec : &psxInt;
@@ -448,15 +355,12 @@ void VMManager::Internal::ClearCPUExecutionCaches()
 {
 	Cpu->Reset();
 	psxCpu->Reset();
-
 #ifdef _M_X86
 	if (CHECK_EEREC && !EmuConfig.Cpu.Recompiler.EnableVU0)
 		CpuMicroVU0.Reset();
 #endif
-
 	CpuVU0->Reset();
 	CpuVU1->Reset();
-
 	if constexpr (newVifDynaRec)
 	{
 		dVifReset(0);
@@ -472,7 +376,6 @@ void VMManager::Execute()
 		Internal::ClearCPUExecutionCaches();
 		vtlb_ResetFastmem();
 	}
-
 	Cpu->Execute();
 }
 
@@ -485,9 +388,8 @@ void VMManager::IdlePollUpdate()
 
 void VMManager::SetPaused(bool paused)
 {
-	if (!HasValidVM())
-		return;
-	SetState(paused ? VMState::Paused : VMState::Running);
+	if (HasValidVM())
+		SetState(paused ? VMState::Paused : VMState::Running);
 }
 
 void VMManager::InitializeAsync(
@@ -508,7 +410,6 @@ void VMManager::InitializeAsync(
 			[boot_params, done_callback = std::move(done_callback)]() {
 				VMBootParameters new_boot_params = boot_params;
 				new_boot_params.disable_achievements_hardcore_mode = true;
-
 				Error retry_error;
 				const VMBootResult retry_result = VMManager::Initialize(new_boot_params, &retry_error);
 				done_callback(retry_result, retry_error);
@@ -519,7 +420,7 @@ void VMManager::InitializeAsync(
 	done_callback(result, error);
 }
 
-VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* error)
+VMManager::VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* error)
 {
 	const Common::Timer init_timer;
 	if (g_vm_state.load(std::memory_order_acquire) != VMState::Shutdown)
@@ -564,16 +465,13 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	{
 		if (boot_params.filename.empty())
 		{
-			Error::SetString(error,
-				TRANSLATE_STR("VMManager", "Cannot load an indexed save state without a boot filename."));
+			Error::SetString(error, TRANSLATE_STR("VMManager", "Cannot load an indexed save state without a boot filename."));
 			return VMBootResult::StartupFailure;
 		}
-
 		state_to_load = GetSaveStateFileName(boot_params.filename.c_str(), boot_params.state_index.value());
 		if (state_to_load.empty())
 		{
-			Error::SetString(error,
-				TRANSLATE_STR("VMManager", "Could not resolve path for indexed save state load."));
+			Error::SetString(error, TRANSLATE_STR("VMManager", "Could not resolve path for indexed save state load."));
 			return VMBootResult::StartupFailure;
 		}
 	}
@@ -591,14 +489,12 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	{
 		if (!StringUtil::compareNoCase(Path::GetExtension(boot_params.game_config), "ini"))
 		{
-			Error::SetStringFmt(error,
-				TRANSLATE_FS("VMManager", "Requested game config '{}' is not an INI file."), boot_params.game_config);
+			Error::SetStringFmt(error, TRANSLATE_FS("VMManager", "Requested game config '{}' is not an INI file."), boot_params.game_config);
 			return VMBootResult::StartupFailure;
 		}
 		if (!FileSystem::FileExists(boot_params.game_config.c_str()))
 		{
-			Error::SetStringFmt(error,
-				TRANSLATE_FS("VMManager", "Requested game config '{}' does not exist."), boot_params.game_config);
+			Error::SetStringFmt(error, TRANSLATE_FS("VMManager", "Requested game config '{}' does not exist."), boot_params.game_config);
 			return VMBootResult::StartupFailure;
 		}
 		g_game_settings_override = boot_params.game_config;
@@ -628,8 +524,8 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 
 	g_target_speed = GetTargetSpeedForLimiterMode(g_limiter_mode);
 	g_use_vsync_for_timing = false;
-
 	g_cpu_implementation_changed = false;
+
 	UpdateCPUImplementations();
 	mmap_ResetBlockTracking();
 	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
@@ -646,7 +542,6 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 		Error::SetString(error, TRANSLATE_STR("VMManager", "Failed to initialize GS."));
 		return VMBootResult::StartupFailure;
 	}
-
 	ScopedGuard close_gs = []() {
 		if (!g_gs_open_on_initialize)
 			MTGS::WaitForClose();
@@ -731,9 +626,9 @@ void VMManager::Shutdown(bool save_resume_state)
 		const std::string resume_file_name(GetCurrentSaveStateFileName(-1));
 		if (!resume_file_name.empty())
 		{
-			DoSaveState(resume_file_name.c_str(), -1, true, false, [](const std::string& error) {
+			DoSaveState(resume_file_name.c_str(), -1, true, false, [](const std::string& err) {
 				Host::AddIconOSDMessage("SaveResumeState", ICON_FA_TRIANGLE_EXCLAMATION,
-					fmt::format(TRANSLATE_FS("VMManager", "Failed to save resume state: {}"), error), Host::OSD_QUICK_DURATION);
+					fmt::format(TRANSLATE_FS("VMManager", "Failed to save resume state: {}"), err), Host::OSD_QUICK_DURATION);
 			});
 		}
 	}
@@ -795,12 +690,10 @@ bool VMManager::RequestReset()
 	if (pcsx2_ax::vm_bridge::is_memcard_busy())
 	{
 		Host::AddIconOSDMessage("RequestReset", ICON_FA_TRIANGLE_EXCLAMATION,
-			TRANSLATE_STR("VMManager",
-				"The memory card is busy, so the reset operation has been cancelled to prevent data loss."),
+			TRANSLATE_STR("VMManager", "The memory card is busy, so the reset operation has been cancelled to prevent data loss."),
 			Host::OSD_WARNING_DURATION);
 		return false;
 	}
-
 	VMManager::Reset();
 	return true;
 }
@@ -825,7 +718,7 @@ void VMManager::Reset()
 	vu1Thread.Reset();
 	MTGS::WaitGS();
 
-	const bool elf_was_changed = (HasBootedELF());
+	const bool elf_was_changed = HasBootedELF();
 	ClearELFInfo();
 	if (elf_was_changed)
 		HandleELFChange(false);
@@ -857,12 +750,8 @@ void VMManager::Internal::VSyncOnCPUThread()
 	pcsx2_ax::vm_bridge::notify_mode_vsync();
 	Patch::ApplyVsyncPatches();
 
-	if (g_frame_advance_count > 0)
-	{
-		--g_frame_advance_count;
-		if (g_frame_advance_count == 0)
-			SetState(VMState::Paused);
-	}
+	if (g_frame_advance_count > 0 && --g_frame_advance_count == 0)
+		SetState(VMState::Paused);
 
 	Achievements::FrameUpdate();
 	PollDiscordPresence();
