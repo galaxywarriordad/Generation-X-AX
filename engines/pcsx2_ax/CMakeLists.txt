@@ -62,12 +62,19 @@ endif()
 set(PCSX2_AX_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/core")
 set(PCSX2_AX_PROTO_INC_DIR "${CMAKE_CURRENT_BINARY_DIR}/proto_inc")
 
-if(PCSX2_AX_PLANNING_ONLY)
-    file(MAKE_DIRECTORY "${PCSX2_AX_PROTO_INC_DIR}/CDVD")
-    file(MAKE_DIRECTORY "${PCSX2_AX_PROTO_INC_DIR}/common")
+function(pcsx2_ax_write_stub rel_path content)
+    set(full_path "${PCSX2_AX_PROTO_INC_DIR}/${rel_path}")
+    get_filename_component(parent_dir "${full_path}" DIRECTORY)
+    file(MAKE_DIRECTORY "${parent_dir}")
+    if(NOT EXISTS "${PCSX2_AX_CORE_DIR}/${rel_path}")
+        file(WRITE "${full_path}" "${content}")
+    endif()
+endfunction()
 
-    if(NOT EXISTS "${PCSX2_AX_CORE_DIR}/Common.h")
-        file(WRITE "${PCSX2_AX_PROTO_INC_DIR}/Common.h"
+if(PCSX2_AX_PLANNING_ONLY)
+    file(MAKE_DIRECTORY "${PCSX2_AX_PROTO_INC_DIR}")
+
+    pcsx2_ax_write_stub("Common.h"
 "#pragma once
 #include <cstdint>
 #include <cstring>
@@ -119,10 +126,128 @@ inline u32 GetBufferU32(const u8* buf, size_t off) noexcept {
     return v;
 }
 ")
-    endif()
 
-    if(NOT EXISTS "${PCSX2_AX_CORE_DIR}/Counters.h")
-        file(WRITE "${PCSX2_AX_PROTO_INC_DIR}/Counters.h"
+    pcsx2_ax_write_stub("Config.h"
+"#pragma once
+#include <cstdint>
+#include <string>
+
+enum class LimiterModeType { Nominal, Slomo, Turbo, Unlimited };
+enum class GSVSyncMode { Disabled, FIFO, Mailbox };
+enum class AspectRatioType { RAuto4_3_3_2, R4_3, R16_9, R10_7, Stretch };
+enum class SavestateCompressionMethod { Uncompressed, Deflate, Zstandard };
+enum class SavestateCompressionLevel { Low, Medium, High, VeryHigh };
+
+struct Pcsx2Config {
+    struct CpuOptions {
+        struct RecompilerOptions { bool EnableFastmem = true; bool EnableVU0 = true; bool EnableVU1 = true; } Recompiler;
+        int ExtraMemory = 0;
+        uint32_t FPUFPCR = 0;
+        bool operator==(const CpuOptions&) const = default;
+        bool CpusChanged(const CpuOptions&) const noexcept { return false; }
+    } Cpu;
+
+    struct GSOptions {
+        static constexpr double DEFAULT_FRAME_RATE_NTSC = 59.94;
+        static constexpr double DEFAULT_FRAME_RATE_PAL = 50.0;
+        double FramerateNTSC = DEFAULT_FRAME_RATE_NTSC;
+        double FrameratePAL = DEFAULT_FRAME_RATE_PAL;
+        float UpscaleMultiplier = 1.0f;
+        AspectRatioType AspectRatio = AspectRatioType::R4_3;
+        bool VsyncEnable = true;
+        bool DisableMailboxPresentation = false;
+        bool SkipDuplicateFrames = false;
+        bool ManualUserHacks = false;
+        bool DumpReplayUseFrameRange = false;
+        uint32_t DumpReplayFrameStart = 0;
+        uint32_t DumpReplayFrameEnd = 0;
+        uint32_t DumpReplayLoopCount = 1;
+        bool operator==(const GSOptions&) const = default;
+        void MaskUserHacks() noexcept {}
+        void MaskUpscalingHacks() noexcept {}
+    } GS;
+
+    struct SpeedhackOptions {
+        bool fastCDVD = false;
+        bool vuThread = true;
+        int EECycleRate = 0;
+        int EECycleSkip = 0;
+        bool operator==(const SpeedhackOptions&) const = default;
+    } Speedhacks;
+
+    struct GamefixOptions {
+        bool InstantDMAHack = false;
+        bool GoemonTlbHack = false;
+        bool operator==(const GamefixOptions&) const = default;
+    } Gamefixes;
+
+    struct ProfilerOptions {
+        bool operator==(const ProfilerOptions&) const = default;
+    } Profiler;
+
+    struct EmulationSpeedOptions {
+        float NominalScalar = 1.0f;
+        float SlomoScalar = 0.5f;
+        float TurboScalar = 2.0f;
+        bool SyncToHostRefreshRate = false;
+        bool UseVSyncForTiming = false;
+        bool operator==(const EmulationSpeedOptions&) const = default;
+    } EmulationSpeed;
+
+    struct AchievementsOptions {
+        bool Enabled = false;
+        bool operator==(const AchievementsOptions&) const = default;
+    } Achievements;
+
+    struct TraceOptions {
+        bool Enabled = false;
+        struct { uint32_t bitset = 0; } EE, IOP, MISC;
+        void SyncToConfig() noexcept {}
+    } Trace;
+
+    struct SavestateOptions {
+        SavestateCompressionMethod CompressionType = SavestateCompressionMethod::Zstandard;
+        SavestateCompressionLevel CompressionRatio = SavestateCompressionLevel::Medium;
+    } Savestate;
+
+    struct DEV9Options {
+        bool operator==(const DEV9Options&) const = default;
+    } DEV9;
+
+    bool EnableFastBoot = true;
+    bool EnableFastBootFastForward = false;
+    bool EnableGameFixes = true;
+    bool EnableCheats = false;
+    bool EnableWideScreenPatches = false;
+    bool EnableNoInterlacingPatches = false;
+    bool EnablePatches = true;
+    bool EnableRecordingTools = false;
+    bool EnablePINE = false;
+    int PINESlot = 28011;
+    bool EnableDiscordPresence = false;
+    bool EnableThreadPinning = false;
+    bool InhibitScreensaver = false;
+    bool WarnAboutUnsafeSettings = true;
+    bool ManuallySetRealTimeClock = false;
+    bool BackupSavestate = true;
+    float CurrentCustomAspectRatio = 0.0f;
+    int RtcSecond = 0, RtcMinute = 0, RtcHour = 0, RtcDay = 1, RtcMonth = 1, RtcYear = 0;
+
+    void CopyRuntimeConfig(const Pcsx2Config&) noexcept {}
+    template <typename T> void LoadSave(T&) {}
+};
+
+inline Pcsx2Config EmuConfig{};
+inline Pcsx2Config::GSOptions& GSConfig = EmuConfig.GS;
+inline bool NoOSD = false;
+inline bool CHECK_EEREC = false;
+inline bool CHECK_IOPREC = false;
+inline bool CHECK_EXTRAMEM = false;
+inline bool THREAD_VU1 = false;
+inline bool IsDevBuild = true;
+")
+
+    pcsx2_ax_write_stub("Counters.h"
 "#pragma once
 #include <cstdint>
 inline uint64_t EEsCycle = 0;
@@ -138,10 +263,8 @@ inline void intEventTest() {}
 inline void UpdateVSyncRate(bool) {}
 inline double GetVerticalFrequency() { return 59.94; }
 ")
-    endif()
 
-    if(NOT EXISTS "${PCSX2_AX_CORE_DIR}/CDVD/CDVDcommon.h")
-        file(WRITE "${PCSX2_AX_PROTO_INC_DIR}/CDVD/CDVDcommon.h"
+    pcsx2_ax_write_stub("CDVD/CDVDcommon.h"
 "#pragma once
 #include <cstdint>
 using u8 = uint8_t;
@@ -215,10 +338,23 @@ struct CDVD_API {
 extern const CDVD_API* CDVD;
 extern u32 g_last_sector_block_lsn;
 ")
-    endif()
 
-    if(NOT EXISTS "${PCSX2_AX_CORE_DIR}/CDVD/IsoReader.h")
-        file(WRITE "${PCSX2_AX_PROTO_INC_DIR}/CDVD/IsoReader.h"
+    pcsx2_ax_write_stub("CDVD/IsoFileFormats.h"
+"#pragma once
+#include <cstdint>
+#include <string>
+
+enum class CDVDDiscType { Other, PS1Disc, PS2Disc };
+
+class IsoFile {
+public:
+    virtual ~IsoFile() = default;
+    virtual bool Open(const std::string&) { return false; }
+    virtual void Close() {}
+};
+")
+
+    pcsx2_ax_write_stub("CDVD/IsoReader.h"
 "#pragma once
 #include <cstdint>
 #include <string>
@@ -236,7 +372,150 @@ public:
     static std::string_view RemoveVersionIdentifierFromPath(std::string_view path) noexcept { return path; }
 };
 ")
-    endif()
+
+    pcsx2_ax_write_stub("common/Error.h"
+"#pragma once
+#include <string>
+#include <string_view>
+#include <utility>
+
+class Error {
+public:
+    void SetString(std::string s) { m_desc = std::move(s); m_valid = true; }
+    void SetStringView(std::string_view sv) { m_desc.assign(sv); m_valid = true; }
+    template <typename... Args>
+    void SetStringFmt(std::string_view fmt_str, Args&&...) { m_desc.assign(fmt_str); m_valid = true; }
+    static void SetString(Error* err, std::string s) { if (err) err->SetString(std::move(s)); }
+    static void SetStringView(Error* err, std::string_view sv) { if (err) err->SetStringView(sv); }
+    template <typename... Args>
+    static void SetStringFmt(Error* err, std::string_view fmt_str, Args&&...) { if (err) err->SetStringView(fmt_str); }
+    static Error CreateErrno(int code) { Error e; e.SetString(\"errno=\" + std::to_string(code)); return e; }
+    [[nodiscard]] bool IsValid() const noexcept { return m_valid; }
+    [[nodiscard]] const std::string& GetDescription() const noexcept { return m_desc; }
+private:
+    std::string m_desc{};
+    bool m_valid = false;
+};
+")
+
+    pcsx2_ax_write_stub("common/Console.h"
+"#pragma once
+#include <cstdio>
+#include <string>
+#include <string_view>
+
+enum ConsoleColors {
+    Color_Default = 0,
+    Color_Green,
+    Color_Red,
+    Color_Yellow,
+    Color_Blue,
+    Color_StrongBlue,
+    Color_StrongGreen,
+    Color_StrongRed,
+    Color_StrongBlack,
+    Color_Gray,
+};
+
+struct ConsoleStream {
+    template <typename... Args> void WriteLn(const char* fmt, Args&&...) const noexcept {
+        std::printf(\"%s\\n\", fmt);
+    }
+    template <typename... Args> void WriteLn(ConsoleColors, const char* fmt, Args&&...) const noexcept {
+        std::printf(\"%s\\n\", fmt);
+    }
+    void WriteLn(const std::string& s) const { std::printf(\"%s\\n\", s.c_str()); }
+    template <typename... Args> void WriteLnFmt(const char* fmt, Args&&...) const noexcept {
+        std::printf(\"%s\\n\", fmt);
+    }
+    template <typename... Args> void Warning(const char* fmt, Args&&...) const noexcept {
+        std::printf(\"%s\\n\", fmt);
+    }
+    void Warning(const std::string& s) const { std::printf(\"%s\\n\", s.c_str()); }
+    template <typename... Args> void WarningFmt(const char* fmt, Args&&...) const noexcept {
+        std::printf(\"%s\\n\", fmt);
+    }
+    template <typename... Args> void Error(const char* fmt, Args&&...) const noexcept {
+        std::printf(\"%s\\n\", fmt);
+    }
+    void Error(const std::string& s) const { std::printf(\"%s\\n\", s.c_str()); }
+};
+
+inline ConsoleStream Console{};
+inline ConsoleStream DevCon{};
+inline ConsoleStream DbgCon{};
+
+#define ERROR_LOG(...) do { Console.Error(__VA_ARGS__); } while (0)
+#define WARNING_LOG(...) do { Console.Warning(__VA_ARGS__); } while (0)
+#define INFO_LOG(...) do { Console.WriteLn(__VA_ARGS__); } while (0)
+#define DEV_LOG(...) do { DevCon.WriteLn(__VA_ARGS__); } while (0)
+#define pxAssert(expr) do { (void)sizeof(expr); } while (0)
+#define pxAssertMsg(expr, msg) do { (void)sizeof(expr); (void)sizeof(msg); } while (0)
+#define pxAssertRel(expr, msg) do { (void)sizeof(expr); (void)sizeof(msg); } while (0)
+#define ASSUME(expr) do { (void)sizeof(expr); } while (0)
+")
+
+    pcsx2_ax_write_stub("common/Threading.h"
+"#pragma once
+#include <cstdint>
+#include <string_view>
+
+namespace Threading {
+
+class ThreadHandle {
+public:
+    ThreadHandle() noexcept = default;
+    static ThreadHandle GetForCallingThread() noexcept { return {}; }
+    void SetAffinity(uint64_t) noexcept {}
+};
+
+inline void Sleep(int) noexcept {}
+inline void SpinWait() noexcept {}
+inline void SetNameOfCurrentThread(std::string_view) noexcept {}
+
+} // namespace Threading
+")
+
+    pcsx2_ax_write_stub("common/ScopedGuard.h"
+"#pragma once
+#include <utility>
+
+template <typename Fn>
+class ScopedGuard {
+public:
+    explicit ScopedGuard(Fn fn) noexcept : m_fn(std::move(fn)) {}
+    ~ScopedGuard() noexcept {
+        if (m_active)
+            m_fn();
+    }
+    ScopedGuard(const ScopedGuard&) = delete;
+    ScopedGuard& operator=(const ScopedGuard&) = delete;
+    void Cancel() noexcept { m_active = false; }
+private:
+    Fn m_fn;
+    bool m_active = true;
+};
+")
+
+    pcsx2_ax_write_stub("common/Timer.h"
+"#pragma once
+#include <cstdint>
+
+namespace Common {
+
+class Timer {
+public:
+    Timer() noexcept = default;
+    [[nodiscard]] double GetTimeMilliseconds() const noexcept { return 0.0; }
+    [[nodiscard]] static int64_t GetCurrentValue() noexcept { return 0; }
+    [[nodiscard]] static double ConvertValueToSeconds(uint64_t) noexcept { return 0.0; }
+};
+
+} // namespace Common
+
+inline uint64_t GetCPUTicks() noexcept { return 0; }
+inline uint64_t GetTickFrequency() noexcept { return 1000000000ULL; }
+")
 endif()
 
 # ---------------------------------------------------------------------------
