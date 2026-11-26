@@ -52,18 +52,25 @@ namespace {
 
 std::atomic<pcsx2_ax::core::VmContext*> g_active_ctx{nullptr};
 std::mutex g_media_path_lock{};
+std::atomic<uint64_t> g_snapshot_seq{0u};
+std::atomic<uint64_t> g_slot_epochs[pcsx2_ax::core::kTelemetryRingCapacity]{};
 
 void publish_snapshot(pcsx2_ax::core::VmContext& ctx, uint64_t new_epoch) noexcept
 {
 	const uint32_t next_slot = 1u - ctx.active_snapshot_slot.load(std::memory_order_acquire);
 	auto* adp = ctx.adapter.load(std::memory_order_acquire);
+
+	// Odd sequence indicates an in-flight snapshot update.
+	g_snapshot_seq.fetch_add(1u, std::memory_order_acq_rel);
 	ctx.snapshots[next_slot] = (adp != nullptr)
 		? adp->capture_snapshot(new_epoch)
 		: pcsx2_ax::core::ModeEpochSnapshot{.epoch = new_epoch};
 	ctx.active_snapshot_slot.store(next_slot, std::memory_order_release);
+	g_snapshot_seq.fetch_add(1u, std::memory_order_release);
+	g_snapshot_seq.notify_all();
 }
 
-[[nodiscard]] uint64_t compute_crc64_sample(const pcsx2_ax::core::FrameTelemetrySample& s) noexcept
+[[nodiscard]] constexpr uint64_t compute_crc64_sample(const pcsx2_ax::core::FrameTelemetrySample& s) noexcept
 {
 	uint64_t h = 0xcbf29ce484222325ULL;
 	auto mix = [&h](uint64_t v) noexcept {
@@ -114,13 +121,16 @@ pcsx2_ax::core::ModeEpochSnapshot current_snapshot(const pcsx2_ax::core::VmConte
 {
 	for (;;)
 	{
-		const uint64_t e1 = ctx.epoch.load(std::memory_order_acquire);
+		const uint64_t s1 = g_snapshot_seq.load(std::memory_order_acquire);
+		if (s1 & 1u)
+			continue;
+
 		const uint32_t slot = ctx.active_snapshot_slot.load(std::memory_order_acquire);
 		pcsx2_ax::core::ModeEpochSnapshot out = ctx.snapshots[slot];
-		const uint64_t e2 = ctx.epoch.load(std::memory_order_acquire);
-		if (e1 == e2)
+		const uint64_t s2 = g_snapshot_seq.load(std::memory_order_acquire);
+		if (s1 == s2 && !(s2 & 1u))
 		{
-			out.epoch = e2;
+			out.epoch = ctx.epoch.load(std::memory_order_acquire);
 			return out;
 		}
 	}
@@ -136,8 +146,12 @@ void record_telemetry(const pcsx2_ax::core::FrameTelemetrySample& sample,
 		stamped.vram_prune_triggered = true;
 
 	const uint64_t idx = ctx.telemetry_write_idx.fetch_add(1u, std::memory_order_acq_rel);
-	ctx.telemetry_ring[idx & pcsx2_ax::core::kTelemetryRingMask] = stamped;
-	std::atomic_thread_fence(std::memory_order_release);
+	const uint64_t ring_slot = idx & pcsx2_ax::core::kTelemetryRingMask;
+	const uint64_t gen = idx + 1u;
+
+	g_slot_epochs[ring_slot].store(0u, std::memory_order_release);
+	ctx.telemetry_ring[ring_slot] = stamped;
+	g_slot_epochs[ring_slot].store(gen, std::memory_order_release);
 }
 
 bool read_latest_telemetry(pcsx2_ax::core::FrameTelemetrySample& out_sample,
@@ -147,8 +161,13 @@ bool read_latest_telemetry(pcsx2_ax::core::FrameTelemetrySample& out_sample,
 	if (idx == 0u)
 		return false;
 
-	out_sample = ctx.telemetry_ring[(idx - 1u) & pcsx2_ax::core::kTelemetryRingMask];
-	return true;
+	const uint64_t ring_slot = (idx - 1u) & pcsx2_ax::core::kTelemetryRingMask;
+	const uint64_t expected_gen = idx;
+	if (g_slot_epochs[ring_slot].load(std::memory_order_acquire) != expected_gen)
+		return false;
+
+	out_sample = ctx.telemetry_ring[ring_slot];
+	return g_slot_epochs[ring_slot].load(std::memory_order_acquire) == expected_gen;
 }
 
 void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter,
@@ -252,7 +271,7 @@ bool VMManager::Internal::HasBootedELF()
 
 bool VMManager::PerformEarlyHardwareChecks(const char** error)
 {
-#define COMMON_DOWNLOAD_MESSAGE "PCSX2_AX prototype build foundation."
+#define COMMON_DOWNLOAD_MESSAGE "PCSX2_AX Prototype Phase build foundation."
 
 #if defined(ARCH_X86)
 	cpuinfo_initialize();
@@ -570,6 +589,7 @@ VMManager::VMBootResult VMManager::Initialize(const VMBootParameters& boot_param
 		if (GSDumpReplayer::IsReplayingDump())
 			GSDumpReplayer::Shutdown();
 
+		VMManager::Internal::ResetVMHotkeyState();
 		pcsx2_ax::vm_bridge::shutdown_mode_subsystems(ctx);
 		g_elf_override.clear();
 		g_game_settings_override.clear();
