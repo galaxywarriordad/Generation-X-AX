@@ -1,583 +1,931 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team & The Silicon Preservation Society
 // SPDX-License-Identifier: GPL-3.0+
 
-#include "CDVDRingSlab.hpp"
-#include "IHardwareModeAdapter.hpp"
+#include "VMManager_Internal.h"
 
-#include <algorithm>
-#include <array>
-#include <atomic>
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <limits>
-#include <memory>
-#include <span>
-#include <thread>
+#include "Achievements.h"
+#include "BuildVersion.h"
+#include "Counters.h"
+#include "DEV9/DEV9.h"
+#include "DebugTools/DebugInterface.h"
+#include "DebugTools/SymbolImporter.h"
+#include "FW.h"
+#include "GS.h"
+#include "GSDumpReplayer.h"
+#include "Host.h"
+#include "ImGui/FullscreenUI.h"
+#include "ImGui/ImGuiOverlays.h"
+#include "Input/InputManager.h"
+#include "MTGS.h"
+#include "MTVU.h"
+#include "Patch.h"
+#include "PerformanceMetrics.h"
+#include "R3000A.h"
+#include "R5900.h"
+#include "Recording/InputRecording.h"
+#include "Recording/InputRecordingControls.h"
+#include "SIO/Sio.h"
+#include "SPU2/spu2.h"
+#include "USB/USB.h"
+#include "Vif_Dynarec.h"
 
-#if defined(__linux__)
-#include <sys/eventfd.h>
-#include <unistd.h>
-#elif defined(_WIN32)
-#include <windows.h>
-#pragma comment(lib, "Synchronization.lib")
-#endif
+#include "common/Console.h"
+#include "common/FileSystem.h"
+#include "common/FPControl.h"
+#include "common/ScopedGuard.h"
+#include "common/Timer.h"
+#include "common/emitter/x86emitter.h"
 
-#if __has_include(<ax/topology/pinning.hpp>)
-#include <ax/topology/pinning.hpp>
-#define PCSX2_AX_CDVD_HAS_AX_TOPOLOGY 1
-#else
-#define PCSX2_AX_CDVD_HAS_AX_TOPOLOGY 0
+#include "cpuinfo.h"
+#include "fmt/format.h"
+
+#include <utility>
+
+#ifdef _WIN32
+#include "common/RedtapeWindows.h"
+#include <objbase.h>
 #endif
 
 namespace pcsx2_ax::vm_bridge {
-[[nodiscard]] pcsx2_ax::core::VmContext& active_context() noexcept;
-[[nodiscard]] uint64_t current_epoch(const pcsx2_ax::core::VmContext& ctx) noexcept;
-} // namespace pcsx2_ax::vm_bridge
-
-namespace pcsx2_ax::cdvd {
-
-class ICdvdDiscSource {
-public:
-	virtual ~ICdvdDiscSource() noexcept = default;
-
-	[[nodiscard]] virtual bool is_disc_ready() const noexcept = 0;
-	[[nodiscard]] virtual uint32_t sector_count() const noexcept = 0;
-	[[nodiscard]] virtual int32_t media_type() const noexcept = 0;
-	[[nodiscard]] virtual bool read_sectors_2048(uint32_t lba, uint32_t count, std::span<uint8_t> dst) noexcept = 0;
-	[[nodiscard]] virtual bool read_sectors_2352(uint32_t lba, uint32_t count, std::span<uint8_t> dst) noexcept = 0;
-
-	virtual void on_tray_changed(bool tray_open, bool disc_inserted) noexcept = 0;
-	virtual void on_refresh_toc() noexcept = 0;
-};
 
 namespace {
 
-inline constexpr uint32_t kSectorsPerRead   = 16u;
-inline constexpr uint32_t kRawSectorBytes   = 2352u;
-inline constexpr uint32_t kBlockRawBytes    = kRawSectorBytes * kSectorsPerRead;
-inline constexpr uint32_t kCacheIndexBits   = 12u;
-inline constexpr uint32_t kCacheSlotCount   = 1u << kCacheIndexBits;
-inline constexpr uint32_t kCacheSlotMask    = kCacheSlotCount - 1u;
-inline constexpr uint32_t kReqRingCapacity  = 256u; // Power of two
-inline constexpr uint32_t kReqRingMask      = kReqRingCapacity - 1u;
-inline constexpr uint32_t kInvalidLsn       = std::numeric_limits<uint32_t>::max();
-inline constexpr uint32_t kMaxPrefetchBurst = 16u;
+std::atomic<pcsx2_ax::core::VmContext*> g_active_ctx{nullptr};
+std::mutex g_media_path_lock{};
 
-inline constexpr int32_t kMode2048 = 0;
-inline constexpr int32_t kMode2328 = 1;
-inline constexpr int32_t kMode2340 = 2;
-
-static_assert(kSectorsPerRead > 1u && (kSectorsPerRead & (kSectorsPerRead - 1u)) == 0u,
-              "kSectorsPerRead must be a power of two");
-static_assert((kReqRingCapacity & (kReqRingCapacity - 1u)) == 0u,
-              "kReqRingCapacity must be a power of two");
-
-struct alignas(pcsx2_ax::core::kCacheLineBytes) CacheBlockSlot {
-	std::atomic<uint64_t> epoch{0u};
-	std::atomic<uint32_t> lsn{kInvalidLsn};
-	uint32_t pad_{0u};
-	std::array<uint8_t, kBlockRawBytes> data{};
-};
-
-// Event-signaled lock-free ring (zero polling sleep; sub-microsecond wakeup when sleeping)
-class alignas(pcsx2_ax::core::kCacheLineBytes) EventRingQueue {
-public:
-	EventRingQueue() noexcept
-	{
-#if defined(__linux__)
-		efd_ = ::eventfd(0u, EFD_NONBLOCK | EFD_CLOEXEC | EFD_SEMAPHORE);
-#endif
-	}
-
-	~EventRingQueue() noexcept
-	{
-#if defined(__linux__)
-		if (efd_ >= 0)
-			::close(efd_);
-#endif
-	}
-
-	bool push(uint32_t lsn) noexcept
-	{
-		for (;;)
-		{
-			const uint32_t head = head_.load(std::memory_order_acquire);
-			const uint32_t tail = tail_.load(std::memory_order_relaxed);
-			const uint32_t next_tail = (tail + 1u) & kReqRingMask;
-			if (next_tail == head)
-				return false;
-
-			uint32_t expected = tail;
-			if (tail_.compare_exchange_weak(
-				expected, next_tail, std::memory_order_acq_rel, std::memory_order_relaxed))
-			{
-				slots_[tail].store(lsn, std::memory_order_release);
-				signal_consumer_if_sleeping();
-				return true;
-			}
-		}
-	}
-
-	bool pop(uint32_t& out_lsn) noexcept
-	{
-		const uint32_t head = head_.load(std::memory_order_relaxed);
-		if (head == tail_.load(std::memory_order_acquire))
-			return false;
-
-		out_lsn = slots_[head].load(std::memory_order_acquire);
-		head_.store((head + 1u) & kReqRingMask, std::memory_order_release);
-		return true;
-	}
-
-	void clear() noexcept
-	{
-		head_.store(tail_.load(std::memory_order_acquire), std::memory_order_release);
-	}
-
-	void wait_for_work(const std::atomic<bool>& running) noexcept
-	{
-		// Fast check before marking consumer asleep
-		if (head_.load(std::memory_order_acquire) != tail_.load(std::memory_order_acquire))
-			return;
-
-		consumer_sleeping_.store(true, std::memory_order_release);
-		if (head_.load(std::memory_order_acquire) != tail_.load(std::memory_order_acquire) ||
-		    !running.load(std::memory_order_acquire))
-		{
-			consumer_sleeping_.store(false, std::memory_order_release);
-			return;
-		}
-
-#if defined(__linux__)
-		if (efd_ >= 0)
-		{
-			uint64_t val = 0u;
-			(void)::read(efd_, &val, sizeof(val));
-		}
-#elif defined(_WIN32)
-		DWORD expected = sleep_gen_.load(std::memory_order_acquire);
-		::WaitOnAddress(&sleep_gen_, &expected, sizeof(expected), 100u);
-#else
-		std::this_thread::yield();
-#endif
-
-		consumer_sleeping_.store(false, std::memory_order_release);
-	}
-
-	void wake_for_shutdown() noexcept
-	{
-		consumer_sleeping_.store(false, std::memory_order_release);
-#if defined(__linux__)
-		if (efd_ >= 0)
-		{
-			const uint64_t one = 1u;
-			(void)::write(efd_, &one, sizeof(one));
-		}
-#elif defined(_WIN32)
-		sleep_gen_.fetch_add(1u, std::memory_order_acq_rel);
-		::WakeByAddressAll(&sleep_gen_);
-#endif
-	}
-
-private:
-	void signal_consumer_if_sleeping() noexcept
-	{
-		if (!consumer_sleeping_.load(std::memory_order_acquire))
-			return;
-
-#if defined(__linux__)
-		if (efd_ >= 0)
-		{
-			const uint64_t one = 1u;
-			(void)::write(efd_, &one, sizeof(one));
-		}
-#elif defined(_WIN32)
-		sleep_gen_.fetch_add(1u, std::memory_order_acq_rel);
-		::WakeByAddressSingle(&sleep_gen_);
-#endif
-	}
-
-	alignas(pcsx2_ax::core::kCacheLineBytes) std::atomic<uint32_t> head_{0u};
-	alignas(pcsx2_ax::core::kCacheLineBytes) std::atomic<uint32_t> tail_{0u};
-	alignas(pcsx2_ax::core::kCacheLineBytes) std::atomic<bool> consumer_sleeping_{false};
-#if defined(__linux__)
-	int efd_{-1};
-#elif defined(_WIN32)
-	std::atomic<DWORD> sleep_gen_{0u};
-#endif
-	std::array<std::atomic<uint32_t>, kReqRingCapacity> slots_{};
-};
-
-class DiscThreadRuntime {
-public:
-	void set_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter,
-	                 ICdvdDiscSource* source,
-	                 pcsx2_ax::core::VmContext* ctx = nullptr) noexcept
-	{
-		if (ctx != nullptr)
-			ctx_ = ctx;
-		auto& active_ctx = resolve_ctx();
-		adapter_.store(adapter, std::memory_order_release);
-		source_.store(source, std::memory_order_release);
-		epoch_.store(pcsx2_ax::vm_bridge::current_epoch(active_ctx), std::memory_order_release);
-		req_ring_.clear();
-	}
-
-	bool start()
-	{
-		ensure_cache_allocated();
-		reset_cache();
-		epoch_.store(pcsx2_ax::vm_bridge::current_epoch(resolve_ctx()), std::memory_order_release);
-
-		bool expected = false;
-		if (thread_open_.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
-			io_thread_ = std::thread([this]() noexcept { run_io_loop(); });
-		return true;
-	}
-
-	void stop()
-	{
-		thread_open_.store(false, std::memory_order_release);
-		req_ring_.wake_for_shutdown();
-		if (io_thread_.joinable())
-			io_thread_.join();
-	}
-
-	void request_sector(uint32_t sector, int32_t) noexcept
-	{
-		ICdvdDiscSource* src = source_.load(std::memory_order_acquire);
-		if (src == nullptr || sector >= src->sector_count())
-			return;
-
-		const uint32_t aligned_lsn = sector & ~(kSectorsPerRead - 1u);
-		const uint64_t ep = pcsx2_ax::vm_bridge::current_epoch(resolve_ctx());
-		if (cache_contains(aligned_lsn, ep))
-			return;
-
-		(void)req_ring_.push(aligned_lsn);
-	}
-
-	uint8_t* get_sector(uint32_t sector, int32_t mode, std::array<uint8_t, kBlockRawBytes>& tls_block) noexcept
-	{
-		ICdvdDiscSource* src = source_.load(std::memory_order_acquire);
-		if (src == nullptr)
-			return tls_block.data();
-
-		const uint64_t ep = pcsx2_ax::vm_bridge::current_epoch(resolve_ctx());
-		const uint32_t sector_block = sector & ~(kSectorsPerRead - 1u);
-		if (!cache_fetch(sector_block, ep, tls_block.data()) && read_block_into_cache(sector_block, ep))
-			(void)cache_fetch(sector_block, ep, tls_block.data());
-
-		const int32_t media = src->media_type();
-		if (media >= 0)
-			return tls_block.data() + (2048u * (sector - sector_block));
-
-		uint8_t* frame = tls_block.data() + (kRawSectorBytes * (sector - sector_block));
-		switch (mode)
-		{
-			case kMode2048: return ((frame[15] & 3u) == 2u) ? (frame + 24) : (frame + 16);
-			case kMode2328: return frame + 24;
-			case kMode2340: return frame + 12;
-			default:        return frame;
-		}
-	}
-
-	int32_t direct_read_sector(uint32_t sector, int32_t mode, uint8_t* out_buffer,
-	                           std::array<uint8_t, kBlockRawBytes>& tls_block) noexcept
-	{
-		ICdvdDiscSource* src = source_.load(std::memory_order_acquire);
-		if (src == nullptr || out_buffer == nullptr || sector >= src->sector_count())
-			return -1;
-
-		const uint64_t ep = pcsx2_ax::vm_bridge::current_epoch(resolve_ctx());
-		const uint32_t sector_block = sector & ~(kSectorsPerRead - 1u);
-		if (!cache_fetch(sector_block, ep, tls_block.data()) && read_block_into_cache(sector_block, ep))
-			(void)cache_fetch(sector_block, ep, tls_block.data());
-
-		const int32_t media = src->media_type();
-		if (media >= 0)
-		{
-			std::memcpy(out_buffer, tls_block.data() + (2048u * (sector - sector_block)), 2048u);
-			return 0;
-		}
-
-		const uint8_t* frame = tls_block.data() + (kRawSectorBytes * (sector - sector_block));
-		switch (mode)
-		{
-			case kMode2048:
-				std::memcpy(out_buffer, ((frame[15] & 3u) == 2u) ? (frame + 24) : (frame + 16), 2048u);
-				return 0;
-			case kMode2328:
-				std::memcpy(out_buffer, frame + 24, 2328u);
-				return 0;
-			case kMode2340:
-				std::memcpy(out_buffer, frame + 12, 2340u);
-				return 0;
-			default:
-				std::memcpy(out_buffer, frame, kRawSectorBytes);
-				return 0;
-		}
-	}
-
-	void refresh_data() noexcept
-	{
-		if (ICdvdDiscSource* src = source_.load(std::memory_order_acquire); src != nullptr)
-			src->on_refresh_toc();
-		epoch_.store(pcsx2_ax::vm_bridge::current_epoch(resolve_ctx()), std::memory_order_release);
-		reset_cache();
-	}
-
-private:
-	[[nodiscard]] pcsx2_ax::core::VmContext& resolve_ctx() const noexcept
-	{
-		return (ctx_ != nullptr) ? *ctx_ : pcsx2_ax::vm_bridge::active_context();
-	}
-
-	static constexpr uint32_t sector_hash(uint32_t lsn) noexcept
-	{
-		uint32_t hash = 0u;
-		int shift = 32;
-		while (shift >= 0)
-		{
-			hash ^= (lsn & kCacheSlotMask);
-			lsn >>= kCacheIndexBits;
-			shift -= static_cast<int>(kCacheIndexBits);
-		}
-		return hash & kCacheSlotMask;
-	}
-
-	void ensure_cache_allocated() noexcept
-	{
-		if (cache_slots_ != nullptr)
-			return;
-		const std::size_t bytes = sizeof(CacheBlockSlot) * kCacheSlotCount;
-		if (cache_slab_.allocate(bytes))
-		{
-			cache_slots_ = new (cache_slab_.data()) CacheBlockSlot[kCacheSlotCount];
-		}
-		else
-		{
-			heap_fallback_slots_ = std::make_unique<CacheBlockSlot[]>(kCacheSlotCount);
-			cache_slots_ = heap_fallback_slots_.get();
-		}
-	}
-
-	void reset_cache() noexcept
-	{
-		if (cache_slots_ == nullptr)
-			return;
-		for (uint32_t i = 0; i < kCacheSlotCount; ++i)
-		{
-			cache_slots_[i].lsn.store(kInvalidLsn, std::memory_order_relaxed);
-			cache_slots_[i].epoch.store(0u, std::memory_order_relaxed);
-		}
-		std::atomic_thread_fence(std::memory_order_release);
-	}
-
-	[[nodiscard]] bool cache_contains(uint32_t lsn, uint64_t ep) const noexcept
-	{
-		if (cache_slots_ == nullptr)
-			return false;
-		CacheBlockSlot& slot = cache_slots_[sector_hash(lsn)];
-		return slot.epoch.load(std::memory_order_acquire) == ep &&
-		       slot.lsn.load(std::memory_order_acquire) == lsn;
-	}
-
-	[[nodiscard]] bool read_block_into_cache(uint32_t sector, uint64_t expected_epoch) noexcept
-	{
-		auto& active_ctx = resolve_ctx();
-		ICdvdDiscSource* src = source_.load(std::memory_order_acquire);
-		if (src == nullptr || cache_slots_ == nullptr ||
-		    pcsx2_ax::vm_bridge::current_epoch(active_ctx) != expected_epoch)
-		{
-			return false;
-		}
-
-		const uint32_t total = src->sector_count();
-		if (sector >= total)
-			return false;
-
-		const uint32_t count = std::min(kSectorsPerRead, total - sector);
-		const int32_t media = src->media_type();
-		CacheBlockSlot& slot = cache_slots_[sector_hash(sector)];
-
-		slot.lsn.store(kInvalidLsn, std::memory_order_release);
-		std::span<uint8_t> dst_span{slot.data.data(), kBlockRawBytes};
-
-		for (int tries = 0; tries < 2; ++tries)
-		{
-			if (pcsx2_ax::vm_bridge::current_epoch(active_ctx) != expected_epoch)
-				return false;
-
-			const bool ok = (media >= 0)
-				? src->read_sectors_2048(sector, count, dst_span)
-				: src->read_sectors_2352(sector, count, dst_span);
-			if (ok && pcsx2_ax::vm_bridge::current_epoch(active_ctx) == expected_epoch)
-			{
-				slot.lsn.store(sector, std::memory_order_release);
-				slot.epoch.store(expected_epoch, std::memory_order_release);
-				return true;
-			}
-		}
-		return false;
-	}
-
-	[[nodiscard]] bool cache_fetch(uint32_t lsn, uint64_t ep, uint8_t* out_block_data) const noexcept
-	{
-		if (cache_slots_ == nullptr)
-			return false;
-		CacheBlockSlot& slot = cache_slots_[sector_hash(lsn)];
-		if (slot.epoch.load(std::memory_order_acquire) != ep ||
-		    slot.lsn.load(std::memory_order_acquire) != lsn)
-		{
-			return false;
-		}
-		std::memcpy(out_block_data, slot.data.data(), kBlockRawBytes);
-		return slot.epoch.load(std::memory_order_acquire) == ep &&
-		       slot.lsn.load(std::memory_order_acquire) == lsn;
-	}
-
-	[[nodiscard]] bool update_disc_status(uint64_t current_ep) noexcept
-	{
-		ICdvdDiscSource* src = source_.load(std::memory_order_acquire);
-		if (src == nullptr)
-			return true;
-
-		if (epoch_.load(std::memory_order_acquire) != current_ep)
-		{
-			epoch_.store(current_ep, std::memory_order_release);
-			req_ring_.clear();
-			reset_cache();
-		}
-
-		const bool ready = src->is_disc_ready();
-		if (!ready)
-		{
-			if (!disc_has_changed_)
-			{
-				disc_has_changed_ = true;
-				src->on_tray_changed(true, false);
-			}
-		}
-		else if (disc_has_changed_)
-		{
-			disc_has_changed_ = false;
-			src->on_tray_changed(false, true);
-			refresh_data();
-			req_ring_.clear();
-		}
-		return !ready;
-	}
-
-	void run_io_loop() noexcept
-	{
-#if PCSX2_AX_CDVD_HAS_AX_TOPOLOGY
-		ax::topology::pin_to_housekeeping_core5();
-#endif
-
-		uint32_t prefetches_left = 0u;
-		std::printf(" * CDVD: IO thread started...\n");
-
-		while (thread_open_.load(std::memory_order_acquire))
-		{
-			auto& active_ctx = resolve_ctx();
-			const uint64_t ep = pcsx2_ax::vm_bridge::current_epoch(active_ctx);
-			if (update_disc_status(ep))
-			{
-				prefetches_left = 0u;
-				req_ring_.wait_for_work(thread_open_);
-				continue;
-			}
-
-			uint32_t request_lsn = 0u;
-			const bool handling_request = req_ring_.pop(request_lsn);
-			if (!handling_request)
-			{
-				if (prefetches_left == 0u)
-				{
-					req_ring_.wait_for_work(thread_open_);
-					continue;
-				}
-				--prefetches_left;
-				request_lsn = last_block_lsn_.load(std::memory_order_relaxed) + kSectorsPerRead;
-			}
-
-			if (!cache_contains(request_lsn, ep) && !read_block_into_cache(request_lsn, ep))
-			{
-				prefetches_left = 0u;
-				continue;
-			}
-
-			last_block_lsn_.store(request_lsn, std::memory_order_release);
-			if (!handling_request)
-				continue;
-
-			ICdvdDiscSource* src = source_.load(std::memory_order_acquire);
-			const uint32_t total = (src != nullptr) ? src->sector_count() : 0u;
-			const uint32_t next_lsn = request_lsn + kSectorsPerRead;
-			if (next_lsn >= total)
-			{
-				prefetches_left = 0u;
-			}
-			else
-			{
-				const uint32_t remaining = total - next_lsn;
-				prefetches_left = std::min((remaining + kSectorsPerRead - 1u) / kSectorsPerRead, kMaxPrefetchBurst);
-			}
-		}
-
-		std::printf(" * CDVD: IO thread finished.\n");
-	}
-
-	pcsx2_ax::core::VmContext* ctx_{nullptr};
-	std::atomic<pcsx2_ax::core::IHardwareModeAdapter*> adapter_{nullptr};
-	std::atomic<ICdvdDiscSource*> source_{nullptr};
-	std::atomic<uint64_t> epoch_{1u};
-
-	HugeTlbSlab cache_slab_{};
-	std::unique_ptr<CacheBlockSlot[]> heap_fallback_slots_{};
-	CacheBlockSlot* cache_slots_{nullptr};
-
-	EventRingQueue req_ring_{};
-	std::thread io_thread_{};
-
-	alignas(pcsx2_ax::core::kCacheLineBytes) std::atomic<bool> thread_open_{false};
-	alignas(pcsx2_ax::core::kCacheLineBytes) std::atomic<uint32_t> last_block_lsn_{0u};
-	bool disc_has_changed_{false};
-};
-
-DiscThreadRuntime& runtime() noexcept
+void publish_snapshot(pcsx2_ax::core::VmContext& ctx, uint64_t new_epoch) noexcept
 {
-	static DiscThreadRuntime instance{};
-	return instance;
+	const uint32_t next_slot = 1u - ctx.active_snapshot_slot.load(std::memory_order_acquire);
+	auto* adp = ctx.adapter.load(std::memory_order_acquire);
+	ctx.snapshots[next_slot] = (adp != nullptr)
+		? adp->capture_snapshot(new_epoch)
+		: pcsx2_ax::core::ModeEpochSnapshot{.epoch = new_epoch};
+	ctx.active_snapshot_slot.store(next_slot, std::memory_order_release);
+}
+
+[[nodiscard]] uint64_t compute_crc64_sample(const pcsx2_ax::core::FrameTelemetrySample& s) noexcept
+{
+	uint64_t h = 0xcbf29ce484222325ULL;
+	auto mix = [&h](uint64_t v) noexcept {
+		h ^= v;
+		h *= 0x100000001b3ULL;
+	};
+	mix(s.frame_index);
+	mix(s.epoch);
+	mix(s.ee_cycles);
+	mix(s.vu1_cycles);
+	mix(s.gs_cycles);
+	mix(static_cast<uint64_t>(s.cdvd_cache_hits) | (static_cast<uint64_t>(s.cdvd_cache_misses) << 32));
+	return h;
 }
 
 } // namespace
 
-void bind_cdvd_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter,
-                       ICdvdDiscSource* source,
-                       pcsx2_ax::core::VmContext* ctx) noexcept
+pcsx2_ax::core::VmContext& default_context() noexcept
 {
-	runtime().set_adapter(adapter, source, ctx);
+	static pcsx2_ax::core::VmContext fallback{};
+	return fallback;
 }
 
-} // namespace pcsx2_ax::cdvd
-
-void cdvdStartThread() { (void)pcsx2_ax::cdvd::runtime().start(); }
-void cdvdStopThread() { pcsx2_ax::cdvd::runtime().stop(); }
-void cdvdRequestSector(uint32_t sector, int32_t mode) { pcsx2_ax::cdvd::runtime().request_sector(sector, mode); }
-
-uint8_t* cdvdGetSector(uint32_t sector, int32_t mode)
+void set_active_context(pcsx2_ax::core::VmContext* ctx) noexcept
 {
-	thread_local std::array<uint8_t, pcsx2_ax::cdvd::kBlockRawBytes> tls_block{};
-	return pcsx2_ax::cdvd::runtime().get_sector(sector, mode, tls_block);
+	g_active_ctx.store(ctx, std::memory_order_release);
 }
 
-int32_t cdvdDirectReadSector(uint32_t sector, int32_t mode, uint8_t* buffer)
+pcsx2_ax::core::VmContext& active_context() noexcept
 {
-	thread_local std::array<uint8_t, pcsx2_ax::cdvd::kBlockRawBytes> tls_block{};
-	return pcsx2_ax::cdvd::runtime().direct_read_sector(sector, mode, buffer, tls_block);
+	auto* ctx = g_active_ctx.load(std::memory_order_acquire);
+	return (ctx != nullptr) ? *ctx : default_context();
 }
 
-void cdvdRefreshData() { pcsx2_ax::cdvd::runtime().refresh_data(); }
+uint64_t current_epoch(const pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	return ctx.epoch.load(std::memory_order_acquire);
+}
+
+uint64_t advance_epoch(pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	const uint64_t next = ctx.epoch.fetch_add(1u, std::memory_order_acq_rel) + 1u;
+	publish_snapshot(ctx, next);
+	return next;
+}
+
+pcsx2_ax::core::ModeEpochSnapshot current_snapshot(const pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	for (;;)
+	{
+		const uint64_t e1 = ctx.epoch.load(std::memory_order_acquire);
+		const uint32_t slot = ctx.active_snapshot_slot.load(std::memory_order_acquire);
+		pcsx2_ax::core::ModeEpochSnapshot out = ctx.snapshots[slot];
+		const uint64_t e2 = ctx.epoch.load(std::memory_order_acquire);
+		if (e1 == e2)
+		{
+			out.epoch = e2;
+			return out;
+		}
+	}
+}
+
+void record_telemetry(const pcsx2_ax::core::FrameTelemetrySample& sample,
+                      pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	pcsx2_ax::core::FrameTelemetrySample stamped = sample;
+	stamped.epoch = current_epoch(ctx);
+	stamped.framebuffer_crc64 = compute_crc64_sample(stamped);
+	if (stamped.vram_allocated_gib >= pcsx2_ax::core::kVramPruneGib)
+		stamped.vram_prune_triggered = true;
+
+	const uint64_t idx = ctx.telemetry_write_idx.fetch_add(1u, std::memory_order_acq_rel);
+	ctx.telemetry_ring[idx & pcsx2_ax::core::kTelemetryRingMask] = stamped;
+	std::atomic_thread_fence(std::memory_order_release);
+}
+
+bool read_latest_telemetry(pcsx2_ax::core::FrameTelemetrySample& out_sample,
+                         const pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	const uint64_t idx = ctx.telemetry_write_idx.load(std::memory_order_acquire);
+	if (idx == 0u)
+		return false;
+
+	out_sample = ctx.telemetry_ring[(idx - 1u) & pcsx2_ax::core::kTelemetryRingMask];
+	return true;
+}
+
+void bind_mode_adapter(pcsx2_ax::core::IHardwareModeAdapter* adapter,
+                       pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	ctx.adapter.store(adapter, std::memory_order_release);
+	(void)advance_epoch(ctx);
+}
+
+pcsx2_ax::core::IHardwareModeAdapter* get_mode_adapter(const pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	return ctx.adapter.load(std::memory_order_acquire);
+}
+
+void set_media_path(std::string path, bool ready, pcsx2_ax::core::VmContext& ctx)
+{
+	{
+		std::lock_guard<std::mutex> lock(g_media_path_lock);
+		ctx.media_path = std::move(path);
+	}
+	ctx.media_ready.store(ready, std::memory_order_release);
+	(void)advance_epoch(ctx);
+}
+
+std::string get_media_path(const pcsx2_ax::core::VmContext& ctx)
+{
+	std::lock_guard<std::mutex> lock(g_media_path_lock);
+	return ctx.media_path;
+}
+
+bool is_media_ready(const pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	return ctx.media_ready.load(std::memory_order_acquire);
+}
+
+void set_memcard_busy(bool busy, pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	ctx.memcard_busy.store(busy, std::memory_order_release);
+}
+
+bool is_memcard_busy(const pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	return ctx.memcard_busy.load(std::memory_order_acquire);
+}
+
+bool init_mode_subsystems(pcsx2_ax::core::VmContext& ctx)
+{
+	auto* adapter = get_mode_adapter(ctx);
+	(void)advance_epoch(ctx);
+	return (adapter != nullptr) ? adapter->initialize() : true;
+}
+
+bool reset_mode_subsystems(pcsx2_ax::core::VmContext& ctx)
+{
+	auto* adapter = get_mode_adapter(ctx);
+	(void)advance_epoch(ctx);
+	return (adapter != nullptr) ? adapter->reset() : true;
+}
+
+void shutdown_mode_subsystems(pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	auto* adapter = get_mode_adapter(ctx);
+	(void)advance_epoch(ctx);
+	if (adapter != nullptr)
+		adapter->shutdown();
+}
+
+void notify_mode_vsync(pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	if (auto* adapter = get_mode_adapter(ctx); adapter != nullptr)
+		adapter->on_vsync();
+}
+
+pcsx2_ax::core::BiosDescriptor current_bios_info(const pcsx2_ax::core::VmContext& ctx) noexcept
+{
+	return current_snapshot(ctx).bios;
+}
+
+} // namespace pcsx2_ax::vm_bridge
+
+std::atomic<VMManager::VMState> VMManager::g_vm_state{VMState::Shutdown};
+bool VMManager::g_cpu_implementation_changed = false;
+Threading::ThreadHandle VMManager::g_vm_thread_handle;
+std::string VMManager::g_elf_override;
+std::string VMManager::g_game_settings_override;
+u32 VMManager::g_frame_advance_count = 0;
+bool VMManager::g_fast_boot_requested = false;
+bool VMManager::g_gs_open_on_initialize = false;
+LimiterModeType VMManager::g_limiter_mode = LimiterModeType::Nominal;
+float VMManager::g_target_speed = 0.0f;
+bool VMManager::g_target_speed_can_sync_to_host = false;
+bool VMManager::g_target_speed_synced_to_host = false;
+bool VMManager::g_use_vsync_for_timing = false;
+
+extern R5900cpu GSDumpReplayerCpu;
+
+bool VMManager::Internal::HasBootedELF()
+{
+	return VMManager::HasBootedELF();
+}
+
+bool VMManager::PerformEarlyHardwareChecks(const char** error)
+{
+#define COMMON_DOWNLOAD_MESSAGE "PCSX2_AX prototype build foundation."
+
+#if defined(ARCH_X86)
+	cpuinfo_initialize();
+
+	if (!cpuinfo_has_x86_sse4_1())
+	{
+		*error =
+			"PCSX2 requires the Streaming SIMD 4.1 Extensions instruction set, which your CPU does not support.\n\n"
+			COMMON_DOWNLOAD_MESSAGE;
+		return false;
+	}
+
+#if _M_SSE >= 0x0501
+	if (!cpuinfo_has_x86_avx2())
+	{
+		*error = "This build of PCSX2 requires the Advanced Vector Extensions 2 instruction set, which your CPU does "
+				 "not support.\n\n"
+				 COMMON_DOWNLOAD_MESSAGE;
+		return false;
+	}
+#endif
+#elif defined(ARCH_ARM64)
+	const size_t runtime_host_page_size = HostSys::GetRuntimePageSize();
+	if (__pagesize != runtime_host_page_size)
+	{
+		*error = "Page size mismatch. This build cannot run on your system.\n\n" COMMON_DOWNLOAD_MESSAGE;
+		return false;
+	}
+#endif
+
+#undef COMMON_DOWNLOAD_MESSAGE
+	return true;
+}
+
+VMManager::VMState VMManager::GetState()
+{
+	return g_vm_state.load(std::memory_order_acquire);
+}
+
+void VMManager::SetState(VMState state)
+{
+	const VMState old_state = g_vm_state.load(std::memory_order_acquire);
+	pxAssert(state != VMState::Initializing && state != VMState::Shutdown);
+	SetTimerResolutionIncreased(state == VMState::Running);
+	g_vm_state.store(state, std::memory_order_release);
+
+	if (state != VMState::Stopping && (state == VMState::Paused || old_state == VMState::Paused))
+	{
+		const bool paused = (state == VMState::Paused);
+		if (paused)
+		{
+			if (THREAD_VU1)
+				vu1Thread.WaitVU();
+			MTGS::WaitGS(false);
+			InputManager::PauseVibration();
+		}
+		else
+		{
+			PerformanceMetrics::Reset();
+			ResetFrameLimiter();
+		}
+
+		SPU2::SetOutputPaused(paused);
+		Achievements::OnVMPaused(paused);
+		UpdateInhibitScreensaver(!paused && EmuConfig.InhibitScreensaver);
+
+		if (paused)
+		{
+			Host::OnVMPaused();
+			AccumulateSessionPlaytime();
+		}
+		else
+		{
+			FullscreenUI::OnVMResumed();
+			Host::OnVMResumed();
+			ResetResumeTimestamp();
+		}
+	}
+	else if (state == VMState::Stopping && old_state == VMState::Running)
+	{
+		Cpu->ExitExecution();
+	}
+}
+
+bool VMManager::HasValidVM()
+{
+	const VMState state = g_vm_state.load(std::memory_order_acquire);
+	return (state >= VMState::Running && state <= VMState::Resetting);
+}
+
+bool VMManager::HasValidOrInitializingVM()
+{
+	const VMState state = g_vm_state.load(std::memory_order_acquire);
+	return (state >= VMState::Initializing && state <= VMState::Resetting);
+}
+
+bool VMManager::Internal::CPUThreadInitialize()
+{
+	Threading::SetNameOfCurrentThread("CPU Thread");
+	PerformanceMetrics::SetCPUThread(Threading::ThreadHandle::GetForCallingThread());
+
+#ifdef _WIN32
+	const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+	if (FAILED(hr))
+	{
+		Host::ReportErrorAsync("Error", fmt::format("CoInitializeEx() failed: {:08X}", hr));
+		return false;
+	}
+#endif
+
+	FPControlRegister::SetCurrent(FPControlRegister::GetDefault());
+
+	if (!cpuinfo_initialize())
+		Console.Error("cpuinfo_initialize() failed.");
+
+#ifdef _M_X86
+	x86Emitter::use_avx = g_cpu.vectorISA >= ProcessorFeatures::VectorISA::AVX;
+#endif
+
+	LogCPUCapabilities();
+
+	if (!SysMemory::Allocate())
+	{
+		Host::ReportErrorAsync("Error", "Failed to allocate VM memory.");
+		return false;
+	}
+
+	InitializeCPUProviders();
+	USBinit();
+	LoadSettings();
+
+	if (EmuConfig.Achievements.Enabled)
+		Achievements::Initialize();
+
+	ReloadPINE();
+
+	if (EmuConfig.EnableDiscordPresence)
+		InitializeDiscordPresence();
+
+	return true;
+}
+
+void VMManager::Internal::CPUThreadShutdown()
+{
+	ShutdownDiscordPresence();
+	PINEServer::Deinitialize();
+	Achievements::Shutdown(false);
+	InputManager::CloseSources();
+	WaitForSaveStateFlush();
+
+	PerformanceMetrics::SetCPUThread(Threading::ThreadHandle());
+
+	USBshutdown();
+	MTGS::ShutdownThread();
+	GSJoinSnapshotThreads();
+	ShutdownCPUProviders();
+	SysMemory::Release();
+
+#ifdef _WIN32
+	CoUninitialize();
+#endif
+
+	Log::SetFileOutputLevel(LOGLEVEL_NONE, std::string());
+	R5900SymbolImporter.ShutdownWorkerThread();
+}
+
+void VMManager::InitializeCPUProviders()
+{
+#ifdef _M_X86
+	recCpu.Reserve();
+	psxRec.Reserve();
+	CpuMicroVU0.Reserve();
+	CpuMicroVU1.Reserve();
+#else
+	vu1Thread.Open();
+#endif
+	VifUnpackSSE_Init();
+}
+
+void VMManager::ShutdownCPUProviders()
+{
+	if (newVifDynaRec)
+	{
+		dVifRelease(1);
+		dVifRelease(0);
+	}
+
+#ifdef _M_X86
+	CpuMicroVU1.Shutdown();
+	CpuMicroVU0.Shutdown();
+	psxRec.Shutdown();
+	recCpu.Shutdown();
+#else
+	if (vu1Thread.IsOpen())
+		vu1Thread.WaitVU();
+#endif
+}
+
+void VMManager::UpdateCPUImplementations()
+{
+	if (GSDumpReplayer::IsReplayingDump())
+	{
+		Cpu = &GSDumpReplayerCpu;
+		psxCpu = &psxInt;
+		CpuVU0 = &CpuIntVU0;
+		CpuVU1 = &CpuIntVU1;
+		return;
+	}
+
+#ifdef _M_X86
+	Cpu = CHECK_EEREC ? &recCpu : &intCpu;
+	psxCpu = CHECK_IOPREC ? &psxRec : &psxInt;
+	CpuVU0 = EmuConfig.Cpu.Recompiler.EnableVU0 ? static_cast<BaseVUmicroCPU*>(&CpuMicroVU0) : static_cast<BaseVUmicroCPU*>(&CpuIntVU0);
+	CpuVU1 = EmuConfig.Cpu.Recompiler.EnableVU1 ? static_cast<BaseVUmicroCPU*>(&CpuMicroVU1) : static_cast<BaseVUmicroCPU*>(&CpuIntVU1);
+#else
+	Cpu = &intCpu;
+	psxCpu = &psxInt;
+	CpuVU0 = &CpuIntVU0;
+	CpuVU1 = &CpuIntVU1;
+#endif
+}
+
+void VMManager::Internal::ClearCPUExecutionCaches()
+{
+	Cpu->Reset();
+	psxCpu->Reset();
+
+#ifdef _M_X86
+	if (CHECK_EEREC && !EmuConfig.Cpu.Recompiler.EnableVU0)
+		CpuMicroVU0.Reset();
+#endif
+
+	CpuVU0->Reset();
+	CpuVU1->Reset();
+
+	if constexpr (newVifDynaRec)
+	{
+		dVifReset(0);
+		dVifReset(1);
+	}
+}
+
+void VMManager::Execute()
+{
+	if (std::exchange(g_cpu_implementation_changed, false))
+	{
+		UpdateCPUImplementations();
+		Internal::ClearCPUExecutionCaches();
+		vtlb_ResetFastmem();
+	}
+
+	Cpu->Execute();
+}
+
+void VMManager::IdlePollUpdate()
+{
+	Achievements::IdleUpdate();
+	PollDiscordPresence();
+	InputManager::PollSources();
+}
+
+void VMManager::SetPaused(bool paused)
+{
+	if (!HasValidVM())
+		return;
+	SetState(paused ? VMState::Paused : VMState::Running);
+}
+
+void VMManager::InitializeAsync(
+	const VMBootParameters& boot_params,
+	VMBootHardcoreDisableCallback hardcore_disable_callback,
+	VMBootDoneCallback done_callback)
+{
+	Error error;
+	const VMBootResult result = VMManager::Initialize(boot_params, &error);
+
+	if (result == VMBootResult::PromptDisableHardcoreMode)
+	{
+		std::string reason = DebugInterface::getPauseOnEntry()
+			? TRANSLATE_STR("VMManager", "Boot and Debug")
+			: TRANSLATE_STR("VMManager", "Resuming state");
+
+		hardcore_disable_callback(reason,
+			[boot_params, done_callback = std::move(done_callback)]() {
+				VMBootParameters new_boot_params = boot_params;
+				new_boot_params.disable_achievements_hardcore_mode = true;
+
+				Error retry_error;
+				const VMBootResult retry_result = VMManager::Initialize(new_boot_params, &retry_error);
+				done_callback(retry_result, retry_error);
+			});
+		return;
+	}
+
+	done_callback(result, error);
+}
+
+VMManager::VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* error)
+{
+	auto& ctx = pcsx2_ax::vm_bridge::active_context();
+	const Common::Timer init_timer;
+	if (g_vm_state.load(std::memory_order_acquire) != VMState::Shutdown)
+	{
+		Error::SetString(error, TRANSLATE_STR("VMManager", "The virtual machine is already running."));
+		return VMBootResult::StartupFailure;
+	}
+
+	Host::CancelGameListRefresh();
+	g_vm_state.store(VMState::Initializing, std::memory_order_release);
+	g_vm_thread_handle = Threading::ThreadHandle::GetForCallingThread();
+	Host::OnVMStarting();
+	VMManager::Internal::ResetVMHotkeyState();
+
+	ScopedGuard close_state = [&ctx] {
+		if (GSDumpReplayer::IsReplayingDump())
+			GSDumpReplayer::Shutdown();
+
+		pcsx2_ax::vm_bridge::shutdown_mode_subsystems(ctx);
+		g_elf_override.clear();
+		g_game_settings_override.clear();
+		ClearELFInfo();
+		ClearDiscDetails();
+
+		Achievements::GameChanged(0, 0);
+		FullscreenUI::GameChanged({}, {}, {}, 0, 0);
+		UpdateDiscordPresence(true);
+		Host::OnGameChanged({}, {}, {}, {}, 0, 0);
+
+		UpdateGameSettingsLayer();
+		g_vm_state.store(VMState::Shutdown, std::memory_order_release);
+		Host::OnVMDestroyed();
+		ApplySettings();
+	};
+
+	std::string state_to_load;
+	g_elf_override = boot_params.elf_override;
+	if (!boot_params.save_state.empty())
+		state_to_load = boot_params.save_state;
+
+	if (boot_params.state_index.has_value())
+	{
+		if (boot_params.filename.empty())
+		{
+			Error::SetString(error, TRANSLATE_STR("VMManager", "Cannot load an indexed save state without a boot filename."));
+			return VMBootResult::StartupFailure;
+		}
+
+		state_to_load = GetSaveStateFileName(boot_params.filename.c_str(), boot_params.state_index.value());
+		if (state_to_load.empty())
+		{
+			Error::SetString(error, TRANSLATE_STR("VMManager", "Could not resolve path for indexed save state load."));
+			return VMBootResult::StartupFailure;
+		}
+	}
+
+	if (!AutoDetectSource(boot_params.filename, error))
+		return VMBootResult::StartupFailure;
+
+	if (!pcsx2_ax::vm_bridge::init_mode_subsystems(ctx))
+	{
+		Error::SetString(error, "Failed to initialize mode adapter subsystems.");
+		return VMBootResult::StartupFailure;
+	}
+
+	if (!boot_params.game_config.empty())
+	{
+		if (!StringUtil::compareNoCase(Path::GetExtension(boot_params.game_config), "ini"))
+		{
+			Error::SetStringFmt(error,
+				TRANSLATE_FS("VMManager", "Requested game config '{}' is not an INI file."), boot_params.game_config);
+			return VMBootResult::StartupFailure;
+		}
+		if (!FileSystem::FileExists(boot_params.game_config.c_str()))
+		{
+			Error::SetStringFmt(error,
+				TRANSLATE_FS("VMManager", "Requested game config '{}' does not exist."), boot_params.game_config);
+			return VMBootResult::StartupFailure;
+		}
+		g_game_settings_override = boot_params.game_config;
+	}
+
+	UpdateDiscDetails(true);
+
+	g_fast_boot_requested =
+		(boot_params.fast_boot.value_or(static_cast<bool>(EmuConfig.EnableFastBoot)) || !g_elf_override.empty()) &&
+		(pcsx2_ax::vm_bridge::is_media_ready(ctx) || !g_elf_override.empty()) &&
+		!GSDumpReplayer::IsReplayingDump();
+
+	if (boot_params.disable_achievements_hardcore_mode || GSDumpReplayer::IsReplayingDump())
+		Achievements::DisableHardcoreMode();
+	else
+		Achievements::ResetHardcoreMode(true);
+
+	if (Achievements::IsHardcoreModeActive() && (!state_to_load.empty() || DebugInterface::getPauseOnEntry()))
+		return VMBootResult::PromptDisableHardcoreMode;
+
+	if (boot_params.start_unlimited.value_or(false))
+		g_limiter_mode = LimiterModeType::Unlimited;
+	else if (boot_params.start_turbo.value_or(false))
+		g_limiter_mode = LimiterModeType::Turbo;
+	else
+		g_limiter_mode = LimiterModeType::Nominal;
+
+	g_target_speed = GetTargetSpeedForLimiterMode(g_limiter_mode);
+	g_use_vsync_for_timing = false;
+
+	g_cpu_implementation_changed = false;
+	UpdateCPUImplementations();
+	mmap_ResetBlockTracking();
+	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
+	Internal::ClearCPUExecutionCaches();
+	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR);
+	memBindConditionalHandlers();
+	SysMemory::Reset();
+	cpuReset();
+
+	Console.WriteLn("Opening GS...");
+	g_gs_open_on_initialize = MTGS::IsOpen();
+	if (!g_gs_open_on_initialize && !MTGS::WaitForOpen())
+	{
+		Error::SetString(error, TRANSLATE_STR("VMManager", "Failed to initialize GS."));
+		return VMBootResult::StartupFailure;
+	}
+
+	ScopedGuard close_gs = []() {
+		if (!g_gs_open_on_initialize)
+			MTGS::WaitForClose();
+	};
+
+	Console.WriteLn("Opening SPU2...");
+	if (!SPU2::Open())
+	{
+		Error::SetString(error, TRANSLATE_STR("VMManager", "Failed to initialize SPU2."));
+		return VMBootResult::StartupFailure;
+	}
+	ScopedGuard close_spu2(&SPU2::Close);
+
+	Console.WriteLn("Opening DEV9...");
+	if (DEV9init() != 0 || DEV9open() != 0)
+	{
+		Error::SetString(error, TRANSLATE_STR("VMManager", "Failed to initialize DEV9."));
+		return VMBootResult::StartupFailure;
+	}
+	ScopedGuard close_dev9 = []() {
+		DEV9close();
+		DEV9shutdown();
+	};
+
+	Console.WriteLn("Opening USB...");
+	if (!USBopen())
+	{
+		Error::SetString(error, TRANSLATE_STR("VMManager", "Failed to initialize USB."));
+		return VMBootResult::StartupFailure;
+	}
+	ScopedGuard close_usb = []() { USBclose(); };
+
+	Console.WriteLn("Opening FW...");
+	if (FWopen() != 0)
+	{
+		Error::SetString(error, TRANSLATE_STR("VMManager", "Failed to initialize FW."));
+		return VMBootResult::StartupFailure;
+	}
+	ScopedGuard close_fw = []() { FWclose(); };
+
+	close_fw.Cancel();
+	close_usb.Cancel();
+	close_dev9.Cancel();
+	close_spu2.Cancel();
+	close_gs.Cancel();
+	close_state.Cancel();
+
+	hwReset();
+
+	Console.WriteLn("VM subsystems initialized in %.2f ms", init_timer.GetTimeMilliseconds());
+	g_vm_state.store(VMState::Paused, std::memory_order_release);
+	Host::OnVMStarted();
+	FullscreenUI::OnVMStarted();
+	UpdateInhibitScreensaver(EmuConfig.InhibitScreensaver);
+	SetEmuThreadAffinities();
+
+	if (!GSDumpReplayer::IsReplayingDump() && !state_to_load.empty())
+	{
+		if (!DoLoadState(state_to_load.c_str(), error))
+		{
+			Shutdown(false);
+			return VMBootResult::StartupFailure;
+		}
+	}
+
+	PerformanceMetrics::Clear();
+	MTGS::ResetStats();
+	return VMBootResult::StartupSuccess;
+}
+
+void VMManager::Shutdown(bool save_resume_state)
+{
+	auto& ctx = pcsx2_ax::vm_bridge::active_context();
+	g_vm_state.store(VMState::Stopping, std::memory_order_release);
+	SetTimerResolutionIncreased(false);
+
+	if (THREAD_VU1)
+		vu1Thread.WaitVU();
+	MTGS::WaitGS();
+
+	if (!GSDumpReplayer::IsReplayingDump() && save_resume_state)
+	{
+		const std::string resume_file_name(GetCurrentSaveStateFileName(-1));
+		if (!resume_file_name.empty())
+		{
+			DoSaveState(resume_file_name.c_str(), -1, true, false, [](const std::string& error) {
+				Host::AddIconOSDMessage("SaveResumeState", ICON_FA_TRIANGLE_EXCLAMATION,
+					fmt::format(TRANSLATE_FS("VMManager", "Failed to save resume state: {}"), error), Host::OSD_QUICK_DURATION);
+			});
+		}
+	}
+
+	if (g_InputRecording.isActive())
+		g_InputRecording.stop();
+
+	g_elf_override.clear();
+	g_game_settings_override.clear();
+	ClearELFInfo();
+	pcsx2_ax::vm_bridge::set_media_path({}, false, ctx);
+	ClearDiscDetails();
+
+	Achievements::GameChanged(0, 0);
+	FullscreenUI::GameChanged({}, {}, {}, 0, 0);
+	UpdateDiscordPresence(true);
+	Host::OnGameChanged({}, {}, {}, {}, 0, 0);
+
+	g_fast_boot_requested = false;
+	UpdateGameSettingsLayer();
+	FPControlRegister::SetCurrent(FPControlRegister::GetDefault());
+
+	Patch::UnloadPatches();
+	R3000A::ioman::reset();
+	vtlb_Shutdown();
+	USBclose();
+	SPU2::Close();
+	pcsx2_ax::vm_bridge::set_memcard_busy(false, ctx);
+	DEV9close();
+	FWclose();
+	pcsx2_ax::vm_bridge::shutdown_mode_subsystems(ctx);
+
+	if (g_gs_open_on_initialize)
+	{
+		MTGS::WaitGS(false, false, false);
+		MTGS::ResetGS(true);
+		MTGS::GameChanged();
+	}
+	else
+	{
+		MTGS::WaitForClose();
+	}
+
+	DEV9shutdown();
+	if (GSDumpReplayer::IsReplayingDump())
+		GSDumpReplayer::Shutdown();
+
+	g_vm_state.store(VMState::Shutdown, std::memory_order_release);
+	FullscreenUI::OnVMDestroyed();
+	SaveStateSelectorUI::Clear();
+	UpdateInhibitScreensaver(false);
+	SetEmuThreadAffinities();
+	Host::OnVMDestroyed();
+	LoadSettings();
+}
+
+bool VMManager::RequestReset()
+{
+	auto& ctx = pcsx2_ax::vm_bridge::active_context();
+	if (pcsx2_ax::vm_bridge::is_memcard_busy(ctx))
+	{
+		Host::AddIconOSDMessage("RequestReset", ICON_FA_TRIANGLE_EXCLAMATION,
+			TRANSLATE_STR("VMManager",
+				"The memory card is busy, so the reset operation has been cancelled to prevent data loss."),
+			Host::OSD_WARNING_DURATION);
+		return false;
+	}
+
+	VMManager::Reset();
+	return true;
+}
+
+void VMManager::Reset()
+{
+	pxAssert(HasValidVM());
+	auto& ctx = pcsx2_ax::vm_bridge::active_context();
+
+	if (g_vm_state.load(std::memory_order_acquire) == VMState::Running)
+	{
+		g_vm_state.store(VMState::Resetting, std::memory_order_release);
+		return;
+	}
+
+	if (!Achievements::ConfirmSystemReset())
+		return;
+
+	if (!GSDumpReplayer::IsReplayingDump() && Achievements::ResetHardcoreMode(false))
+		ApplySettings();
+
+	vu1Thread.WaitVU();
+	vu1Thread.Reset();
+	MTGS::WaitGS();
+
+	const bool elf_was_changed = HasBootedELF();
+	ClearELFInfo();
+	if (elf_was_changed)
+		HandleELFChange(false);
+
+	Achievements::ResetClient();
+	(void)pcsx2_ax::vm_bridge::reset_mode_subsystems(ctx);
+	mmap_ResetBlockTracking();
+	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
+	Internal::ClearCPUExecutionCaches();
+	memBindConditionalHandlers();
+	SysMemory::Reset();
+	cpuReset();
+	hwReset();
+
+	if (g_InputRecording.isActive())
+	{
+		g_InputRecording.handleReset();
+		MTGS::PresentCurrentFrame();
+	}
+
+	ResetFrameLimiter();
+
+	if (g_vm_state.load(std::memory_order_acquire) == VMState::Resetting)
+		g_vm_state.store(VMState::Running, std::memory_order_release);
+}
+
+void VMManager::Internal::VSyncOnCPUThread()
+{
+	static uint64_t s_frame_counter = 0u;
+	auto& ctx = pcsx2_ax::vm_bridge::active_context();
+	pcsx2_ax::vm_bridge::notify_mode_vsync(ctx);
+
+	pcsx2_ax::core::FrameTelemetrySample sample{};
+	sample.frame_index = ++s_frame_counter;
+	sample.ee_cycles = static_cast<uint64_t>(EEsCycle);
+	sample.gs_cycles = static_cast<uint64_t>(EEoCycle);
+	pcsx2_ax::vm_bridge::record_telemetry(sample, ctx);
+
+	Patch::ApplyVsyncPatches();
+
+	if (g_frame_advance_count > 0)
+	{
+		--g_frame_advance_count;
+		if (g_frame_advance_count == 0)
+			SetState(VMState::Paused);
+	}
+
+	Achievements::FrameUpdate();
+	PollDiscordPresence();
+}
+
+void VMManager::Internal::PollInputOnCPUThread()
+{
+	Host::PumpMessagesOnCPUThread();
+	InputManager::PollSources();
+
+	if (EmuConfig.EnableRecordingTools && g_InputRecording.isActive())
+	{
+		g_InputRecording.processRecordQueue();
+		g_InputRecording.getControls().processControlQueue();
+		g_InputRecording.incFrameCounter();
+		g_InputRecording.handleExceededFrameCounter();
+		g_InputRecording.handleControllerDataUpdate();
+	}
+}
+
+bool VMManager::Internal::IsExecutionInterrupted()
+{
+	return g_vm_state.load(std::memory_order_relaxed) != VMState::Running || g_cpu_implementation_changed;
+}
