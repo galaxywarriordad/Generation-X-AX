@@ -905,6 +905,7 @@ set(PCSX2_AX_PS2_SOURCES
   "${PCSX2_AX_PS2_DIR}/PadDualshock2.cpp"
   "${PCSX2_AX_PS2_DIR}/PsxBios.cpp"
   "${PCSX2_AX_PS2_DIR}/Sio2.cpp"
+  "${PCSX2_AX_PS2_DIR}/Ps2ConsoleAdapter.cpp"
 )
 
 add_library(ax_pcsx2_adapter_ps2 STATIC ${PCSX2_AX_PS2_SOURCES})
@@ -943,6 +944,7 @@ set(PCSX2_AX_COHH_SOURCES
   "${PCSX2_AX_COHH_DIR}/ACSRAM.cpp"
   "${PCSX2_AX_COHH_DIR}/ACUART.cpp"
   "${PCSX2_AX_COHH_DIR}/ACUART_GLUE.cpp"
+  "${PCSX2_AX_COHH_DIR}/CohHArcadeAdapter.cpp"
 )
 
 add_library(ax_pcsx2_adapter_coh_h STATIC ${PCSX2_AX_COHH_SOURCES})
@@ -981,3 +983,6 @@ if(PCSX2_AX_BUILD_HARNESS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pcsx2_ax_harne
       pcsx2_ax_compile_options
   )
 endif()
+
+
+

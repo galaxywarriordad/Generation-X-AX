@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 The Silicon Preservation Society (galaxywarriordad)
+﻿// SPDX-FileCopyrightText: 2026 The Silicon Preservation Society (galaxywarriordad)
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
@@ -11,15 +11,20 @@
 
 namespace pcsx2_ax::core {
 
+#ifndef PCSX2_AX_CORE_MODE_TYPES_DEFINED
+#define PCSX2_AX_CORE_MODE_TYPES_DEFINED
 enum class HardwareMode : uint8_t {
   Ps2Console, // Retail PS2 console BIOS + disc (.iso/.chd/.zso) + .ps2 memory cards
   CohHArcade  // System 246 / 256 / Super 256 COH-H board + .acgame + dongle + ACSRAM/NVRAM
 };
 
 struct BiosDescriptor {
-  std::filesystem::path path;
-  uint32_t crc32 = 0;
-  std::string_view region_code;
+  std::filesystem::path path{};
+  uint32_t rom_version{0u};
+  uint32_t bios_crc{0u};
+  uint32_t crc32{0u};
+  std::string_view region_code{};
+  bool is_arcade_coh_h{false};
 };
 
 struct ModeEpochSnapshot {
@@ -45,6 +50,7 @@ struct FrameTelemetrySample {
   uint32_t cdvd_inflight_chunks = 0;
   bool gameplay_active = false;
 };
+#endif // PCSX2_AX_CORE_MODE_TYPES_DEFINED
 
 class VmContext;
 class StateWrapper;
@@ -129,3 +135,6 @@ concept ClockIrqPolicyConcept = std::derived_from<T, IClockIrqPolicy> && require
 };
 
 } // namespace pcsx2_ax::core
+
+
+
