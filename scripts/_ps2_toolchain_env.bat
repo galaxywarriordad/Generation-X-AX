@@ -1,11 +1,33 @@
 @echo off
 setlocal enabledelayedexpansion
 
-set "SCRIPT_DIR=%~dp0"
-for %%i in ("%SCRIPT_DIR%..") do set "PROJ_DIR=%%~fi"
-if "%PROJ_DIR:~-1%"=="\" set "PROJ_DIR=%PROJ_DIR:~0,-1%"
-set "PCSX2_AX_SRC=%PROJ_DIR%\engines\pcsx2_ax"
-set "LLVM_PROJ_DIR=%PROJ_DIR:\=/%"
+set "THIS_SCRIPT_DIR=%~dp0"
+if "%THIS_SCRIPT_DIR:~-1%"=="\" set "THIS_SCRIPT_DIR=%THIS_SCRIPT_DIR:~0,-1%"
+
+set "RESOLVED_ROOT="
+for %%C in (
+    "%THIS_SCRIPT_DIR%\.."
+    "%THIS_SCRIPT_DIR%\..\.."
+    "%THIS_SCRIPT_DIR%\..\..\.."
+    "C:\Users\nick_\Generation-X-AX"
+) do (
+    if not defined RESOLVED_ROOT (
+        for %%F in ("%%~fC") do (
+            if exist "%%~fF\engines\pcsx2_ax\CMakeLists.txt" (
+                set "RESOLVED_ROOT=%%~fF"
+            )
+        )
+    )
+)
+
+if not defined RESOLVED_ROOT (
+    echo [@=FATAL] Could not locate repository root containing engines\pcsx2_ax\CMakeLists.txt.
+    exit /b 1
+)
+if "%RESOLVED_ROOT:~-1%"=="\" set "RESOLVED_ROOT=%RESOLVED_ROOT:~0,-1%"
+
+set "RESOLVED_SRC=%RESOLVED_ROOT%\engines\pcsx2_ax"
+set "RESOLVED_LLVM_ROOT=%RESOLVED_ROOT:\=/%"
 
 if not defined VSCMD_VER (
     if exist "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat" (
@@ -35,14 +57,10 @@ for %%P in ("%CMAKE_EXE%" "%NINJA_EXE%" "%CLANG_CL_EXE%" "%LLD_LINK_EXE%") do (
     )
 )
 
-for %%D in ("CMAKE_EXE" "NINJA_EXE" "CLANG_CL_EXE" "LLD_LINK_EXE" "LLVM_PROFDATA_EXE" "PROJ_DIR" "PCSX2_AX_SRC" "LLVM_PROJ_DIR") do (
-    set "_val=!%%D!"
-)
-
 endlocal & (
-    set "PROJ_DIR=%PROJ_DIR%"
-    set "PCSX2_AX_SRC=%PCSX2_AX_SRC%"
-    set "LLVM_PROJ_DIR=%LLVM_PROJ_DIR%"
+    set "PROJ_DIR=%RESOLVED_ROOT%"
+    set "PCSX2_AX_SRC=%RESOLVED_SRC%"
+    set "LLVM_PROJ_DIR=%RESOLVED_LLVM_ROOT%"
     set "CMAKE_EXE=%CMAKE_EXE%"
     set "NINJA_EXE=%NINJA_EXE%"
     set "CLANG_CL_EXE=%CLANG_CL_EXE%"

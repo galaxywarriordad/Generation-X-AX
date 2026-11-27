@@ -10,6 +10,8 @@ set "LOG_FILE=%PROJ_DIR%\build_ps2_stage0_incremental.log"
 
 echo =======================================================================
 echo  [PS2 STAGE 0I - INCREMENTAL] Ninja Delta Rebuild (-j 4)
+echo  Source: %PCSX2_AX_SRC%
+echo  Build : %BUILD_DIR%
 echo =======================================================================
 
 taskkill /F /IM pcsx2_ax_harness.exe /T >nul 2>&1

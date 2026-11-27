@@ -13,6 +13,8 @@ set "TRIAGE_LOG=%PROJ_DIR%\build_ps2_stage0_triage.log"
 
 echo =======================================================================
 echo  [PS2 STAGE 0LD - LEAN DIAGNOSTICS] Clean Cold Build (-j 4)
+echo  Source: %PCSX2_AX_SRC%
+echo  Build : %BUILD_DIR%
 echo =======================================================================
 
 taskkill /F /IM pcsx2_ax_harness.exe /T >nul 2>&1
@@ -20,6 +22,8 @@ if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%" >nul 2>&1
 mkdir "%BUILD_DIR%"
 
 echo Timestamp : %DATE% %TIME% > "%TRIAGE_LOG%"
+echo Source    : %PCSX2_AX_SRC% >> "%TRIAGE_LOG%"
+echo Build     : %BUILD_DIR% >> "%TRIAGE_LOG%"
 "%CLANG_CL_EXE%" --version >> "%TRIAGE_LOG%" 2>&1
 
 set "OPT_FLAGS=/MD /EHsc /O2 /DNDEBUG /std:c++20 -march=skylake -Qunused-arguments"

@@ -27,6 +27,8 @@ set "LINK_FLAGS=/IGNORE:4006 /IGNORE:4221 /libpath:\"%CLANG_PROF_LIB_DIR%\" /WHO
 
 echo =======================================================================
 echo  [PS2 STAGE 1 - INSTRUMENTATION] Building Instrumented pcsx2_ax_harness
+echo  Source: %PCSX2_AX_SRC%
+echo  Build : %BUILD_DIR%
 echo =======================================================================
 
 "%CMAKE_EXE%" -G Ninja -Wno-unused-cli ^

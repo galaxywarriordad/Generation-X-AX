@@ -25,6 +25,8 @@ set "C_OPT_FLAGS=/MD /O3 /Ob2 /DNDEBUG -march=skylake -fprofile-use=%PROFDATA_LL
 
 echo =======================================================================
 echo  [PS2 STAGE 2 - OPTIMISATION] Building PGO + ThinLTO pcsx2_ax_harness
+echo  Source: %PCSX2_AX_SRC%
+echo  Build : %BUILD_DIR%
 echo =======================================================================
 
 "%CMAKE_EXE%" -G Ninja -Wno-unused-cli ^

@@ -18,10 +18,13 @@ set "C_OPT_FLAGS=/MD /O2 /DNDEBUG -march=skylake -Qunused-arguments"
 
 echo =======================================================================
 echo  [PS2 STAGE 0 - CONTROL / HIGH-VELOCITY] pcsx2_ax_harness (-j 4)
+echo  Source: %PCSX2_AX_SRC%
+echo  Build : %BUILD_DIR%
 echo =======================================================================
 
 echo Start Timestamp : %DATE% %TIME% > "%SUMMARY_LOG%"
-echo Target          : pcsx2_ax_harness (Prototype Phase) >> "%SUMMARY_LOG%"
+echo Source Dir      : %PCSX2_AX_SRC% >> "%SUMMARY_LOG%"
+echo Build Dir       : %BUILD_DIR% >> "%SUMMARY_LOG%"
 
 "%CMAKE_EXE%" -G Ninja -Wno-unused-cli ^
     -DCMAKE_BUILD_TYPE=Release ^

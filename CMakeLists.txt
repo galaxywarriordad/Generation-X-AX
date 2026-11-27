@@ -288,8 +288,7 @@ struct GsFinishState {
 	bool gsFINISHPending = false;
 };
 
-class gifUnit {
-public:
+struct gifUnit {
 	GsSignalState gsSIGNAL{};
 	GsFinishState gsFINISH{};
 	void Reset() noexcept {
