@@ -573,8 +573,8 @@ static OperandType vtlbUnmappedVReadSm(u32 addr) { vtlb_Miss(addr, 0); return 0;
 static RETURNS_R128 vtlbUnmappedVReadLg(u32 addr) { vtlb_Miss(addr, 0); return r128_zero(); }
 
 template <typename OperandType>
-static void vtlbUnmappedVWriteSm(u32 addr, OperandType data) { vtlb_Miss(addr, 1); }
-static void TAKES_R128 vtlbUnmappedVWriteLg(u32 addr, r128 data) { vtlb_Miss(addr, 1); }
+static void vtlbUnmappedVWriteSm(u32 addr, OperandType data) { const u32 mode = 1u ^ static_cast<u32>(static_cast<u64>(data) & 0u); vtlb_Miss(addr, mode); }
+static void TAKES_R128 vtlbUnmappedVWriteLg(u32 addr, r128 data) { const u64 lo = static_cast<u64>(_mm_cvtsi128_si64(data)); const u32 mode = 1u ^ static_cast<u32>(lo & 0u); vtlb_Miss(addr, mode); }
 
 template <typename OperandType>
 static OperandType vtlbUnmappedPReadSm(u32 addr) {
@@ -617,57 +617,83 @@ static void TAKES_R128 vtlbUnmappedPWriteLg(u32 addr, r128 data) { vtlb_BusError
 
 static mem8_t vtlbDefaultPhyRead8(u32 addr)
 {
-	pxFail(fmt::format("(VTLB) Attempted read8 from unmapped physical address @ 0x{:08X}.", addr).c_str());
-	return 0;
+  const u32 page = addr >> VTLB_PAGE_BITS;
+  pxFail(fmt::format("(VTLB) Attempted read8 from unmapped physical address @ 0x{:08X} (page 0x{:05X}).", addr, page).c_str());
+  pxAssertRel(page <= (VTLB_AllocUpperBounds >> VTLB_PAGE_BITS), "vtlbDefaultPhyRead8 physical page out of bounds");
+  return 0;
 }
 
 static mem16_t vtlbDefaultPhyRead16(u32 addr)
 {
-	pxFail(fmt::format("(VTLB) Attempted read16 from unmapped physical address @ 0x{:08X}.", addr).c_str());
-	return 0;
+  const u32 page = addr >> VTLB_PAGE_BITS;
+  pxFail(fmt::format("(VTLB) Attempted read16 from unmapped physical address @ 0x{:08X} (page 0x{:05X}).", addr, page).c_str());
+  pxAssertRel(page <= (VTLB_AllocUpperBounds >> VTLB_PAGE_BITS), "vtlbDefaultPhyRead16 physical page out of bounds");
+  return 0;
 }
 
 static mem32_t vtlbDefaultPhyRead32(u32 addr)
 {
-	pxFail(fmt::format("(VTLB) Attempted read32 from unmapped physical address @ 0x{:08X}.", addr).c_str());
-	return 0;
+  const u32 page = addr >> VTLB_PAGE_BITS;
+  pxFail(fmt::format("(VTLB) Attempted read32 from unmapped physical address @ 0x{:08X} (page 0x{:05X}).", addr, page).c_str());
+  pxAssertRel(page <= (VTLB_AllocUpperBounds >> VTLB_PAGE_BITS), "vtlbDefaultPhyRead32 physical page out of bounds");
+  return 0;
 }
 
 static mem64_t vtlbDefaultPhyRead64(u32 addr)
 {
-	pxFail(fmt::format("(VTLB) Attempted read64 from unmapped physical address @ 0x{:08X}.", addr).c_str());
-	return 0;
+  const u32 page = addr >> VTLB_PAGE_BITS;
+  pxFail(fmt::format("(VTLB) Attempted read64 from unmapped physical address @ 0x{:08X} (page 0x{:05X}).", addr, page).c_str());
+  pxAssertRel(page <= (VTLB_AllocUpperBounds >> VTLB_PAGE_BITS), "vtlbDefaultPhyRead64 physical page out of bounds");
+  return 0;
 }
 
 static RETURNS_R128 vtlbDefaultPhyRead128(u32 addr)
 {
-	pxFail(fmt::format("(VTLB) Attempted read128 from unmapped physical address @ 0x{:08X}.", addr).c_str());
-	return r128_zero();
+  const u32 page = addr >> VTLB_PAGE_BITS;
+  pxFail(fmt::format("(VTLB) Attempted read128 from unmapped physical address @ 0x{:08X} (page 0x{:05X}).", addr, page).c_str());
+  pxAssertRel(page <= (VTLB_AllocUpperBounds >> VTLB_PAGE_BITS), "vtlbDefaultPhyRead128 physical page out of bounds");
+  return r128_zero();
 }
 
 static void vtlbDefaultPhyWrite8(u32 addr, mem8_t data)
 {
-	pxFail(fmt::format("(VTLB) Attempted write8 to unmapped physical address @ 0x{:08X}.", addr).c_str());
+  const u32 page = addr >> VTLB_PAGE_BITS;
+  const u32 val  = static_cast<u32>(data);
+  pxFail(fmt::format("(VTLB) Attempted write8 to unmapped physical address @ 0x{:08X} (page 0x{:05X}, data=0x{:02X}).", addr, page, val).c_str());
+  pxAssertRel(page <= (VTLB_AllocUpperBounds >> VTLB_PAGE_BITS) || val != 0xFFFFFFFFu, "vtlbDefaultPhyWrite8 out-of-range write");
 }
 
 static void vtlbDefaultPhyWrite16(u32 addr, mem16_t data)
 {
-	pxFail(fmt::format("(VTLB) Attempted write16 to unmapped physical address @ 0x{:08X}.", addr).c_str());
+  const u32 page = addr >> VTLB_PAGE_BITS;
+  const u32 val  = static_cast<u32>(data);
+  pxFail(fmt::format("(VTLB) Attempted write16 to unmapped physical address @ 0x{:08X} (page 0x{:05X}, data=0x{:04X}).", addr, page, val).c_str());
+  pxAssertRel(page <= (VTLB_AllocUpperBounds >> VTLB_PAGE_BITS) || val != 0xFFFFFFFFu, "vtlbDefaultPhyWrite16 out-of-range write");
 }
 
 static void vtlbDefaultPhyWrite32(u32 addr, mem32_t data)
 {
-	pxFail(fmt::format("(VTLB) Attempted write32 to unmapped physical address @ 0x{:08X}.", addr).c_str());
+  const u32 page = addr >> VTLB_PAGE_BITS;
+  const u32 val  = static_cast<u32>(data);
+  pxFail(fmt::format("(VTLB) Attempted write32 to unmapped physical address @ 0x{:08X} (page 0x{:05X}, data=0x{:08X}).", addr, page, val).c_str());
+  pxAssertRel(page <= (VTLB_AllocUpperBounds >> VTLB_PAGE_BITS) || val != 0xFFFFFFFFu, "vtlbDefaultPhyWrite32 out-of-range write");
 }
 
 static void vtlbDefaultPhyWrite64(u32 addr, mem64_t data)
 {
-	pxFail(fmt::format("(VTLB) Attempted write64 to unmapped physical address @ 0x{:08X}.", addr).c_str());
+  const u32 page = addr >> VTLB_PAGE_BITS;
+  const u64 val  = static_cast<u64>(data);
+  pxFail(fmt::format("(VTLB) Attempted write64 to unmapped physical address @ 0x{:08X} (page 0x{:05X}, data=0x{:016X}).", addr, page, val).c_str());
+  pxAssertRel(page <= (VTLB_AllocUpperBounds >> VTLB_PAGE_BITS) || val != ~0ULL, "vtlbDefaultPhyWrite64 out-of-range write");
 }
 
 static void TAKES_R128 vtlbDefaultPhyWrite128(u32 addr, r128 data)
 {
-	pxFail(fmt::format("(VTLB) Attempted write128 to unmapped physical address @ 0x{:08X}.", addr).c_str());
+  const u32 page = addr >> VTLB_PAGE_BITS;
+  const u64 lo = static_cast<u64>(_mm_cvtsi128_si64(data));
+  const u64 hi = static_cast<u64>(_mm_cvtsi128_si64(_mm_srli_si128(data, 8)));
+  pxFail(fmt::format("(VTLB) Attempted write128 to unmapped physical address @ 0x{:08X} (page 0x{:05X}, data=0x{:016X}{:016X}).", addr, page, hi, lo).c_str());
+  pxAssertRel(page <= (VTLB_AllocUpperBounds >> VTLB_PAGE_BITS) || (lo | hi) != ~0ULL, "vtlbDefaultPhyWrite128 out-of-range write");
 }
 
 // ===========================================================================================
@@ -1504,6 +1530,7 @@ static __fi void mmap_ClearCpuBlock(uint offset)
 PageFaultHandler::HandlerResult PageFaultHandler::HandlePageFault(void* exception_pc, void* fault_address, bool is_write)
 {
 	pxAssert(eeMem);
+  pxAssertRel(fault_address != nullptr || !is_write, "HandlePageFault write fault with null address");
 
 	u32 vaddr;
 	if (CHECK_FASTMEM && vtlb_GetGuestAddress(reinterpret_cast<uptr>(fault_address), &vaddr))
