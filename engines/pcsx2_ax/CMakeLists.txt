@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22)
+﻿cmake_minimum_required(VERSION 3.22)
 
 project(pcsx2_ax
   VERSION 0.1.0
@@ -971,6 +971,7 @@ target_link_libraries(ax_pcsx2_adapter_coh_h
 if(PCSX2_AX_BUILD_HARNESS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pcsx2_ax_harness.cpp")
   add_executable(pcsx2_ax_harness
     "${CMAKE_CURRENT_SOURCE_DIR}/pcsx2_ax_harness.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/core/vm_bridge_stub.cpp"
   )
   set_target_properties(pcsx2_ax_harness PROPERTIES CXX_VISIBILITY_PRESET hidden)
   target_link_libraries(pcsx2_ax_harness

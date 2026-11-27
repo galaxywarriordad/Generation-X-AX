@@ -1,3 +1,6 @@
+﻿#pragma once
+#ifndef AX_GUARD_VTLB_H
+#define AX_GUARD_VTLB_H
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
@@ -246,3 +249,5 @@ struct GoemonTlb {
 	u32 key; // uniq number attached to an allocation
 	u32 unk5;
 };
+#endif // AX_GUARD_VTLB_H
+

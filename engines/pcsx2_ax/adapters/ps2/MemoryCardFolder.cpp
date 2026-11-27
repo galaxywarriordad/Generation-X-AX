@@ -1,3 +1,4 @@
+﻿#include "../../core/ryml.hpp"
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
@@ -2393,3 +2394,4 @@ bool FolderMemoryCardAggregator::ReIndex(uint slot, const bool enableFiltering, 
 	m_lastKnownFilter = filter;
 	return false;
 }
+

@@ -1,7 +1,9 @@
+﻿#pragma once
+#ifndef AX_FIXED_CDVDCOMMON_H
+#define AX_FIXED_CDVDCOMMON_H
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-#pragma once
 
 #include "common/Pcsx2Defs.h"
 
@@ -208,3 +210,5 @@ extern s32 DoCDVDreadTrack(u32 lsn, int mode);
 extern s32 DoCDVDgetBuffer(u8* buffer);
 extern s32 DoCDVDdetectDiskType();
 extern void DoCDVDresetDiskTypeCache();
+#endif // AX_FIXED_CDVDCOMMON_H
+
