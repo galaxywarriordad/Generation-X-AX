@@ -1,71 +1,90 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal EnableExtensions EnableDelayedExpansion
 
-set "THIS_SCRIPT_DIR=%~dp0"
-if "%THIS_SCRIPT_DIR:~-1%"=="\" set "THIS_SCRIPT_DIR=%THIS_SCRIPT_DIR:~0,-1%"
+:: ============================================================================
+:: _ps2_toolchain_env.bat — Shared Environment Resolver for PCSX2_AX Scripts
+:: ============================================================================
+:: Resolves GENX_ROOT from %~dp0 (supporting C:\Users\nick_\Desktop\Generation-X-AX
+:: or any other moved directory), locates ax-sdk and LLVM clang-cl/ninja/cmake,
+:: and exports environment variables to the calling batch script.
+:: ============================================================================
 
-set "RESOLVED_ROOT="
-for %%C in (
-    "%THIS_SCRIPT_DIR%\.."
-    "%THIS_SCRIPT_DIR%\..\.."
-    "%THIS_SCRIPT_DIR%\..\..\.."
-    "C:\Users\nick_\Generation-X-AX"
-) do (
-    if not defined RESOLVED_ROOT (
-        for %%F in ("%%~fC") do (
-            if exist "%%~fF\engines\pcsx2_ax\CMakeLists.txt" (
-                set "RESOLVED_ROOT=%%~fF"
-            )
-        )
-    )
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..") do set "GENX_ROOT=%%~fI"
+for %%I in ("%GENX_ROOT%\..") do set "PARENT_DIR=%%~fI"
+
+if not defined PS2_SRC_DIR set "PS2_SRC_DIR=%GENX_ROOT%\engines\pcsx2_ax"
+if not defined PS2_BUILD_DIR set "PS2_BUILD_DIR=%GENX_ROOT%\build_ps2_stage0"
+if not defined PGO_PROF_DIR set "PGO_PROF_DIR=%GENX_ROOT%\build_ps2_pgo_prof"
+if not defined NINJA_JOBS set "NINJA_JOBS=4"
+
+if not defined AX_SDK_DIR (
+  if exist "%PARENT_DIR%\ax-sdk\CMakeLists.txt" (
+    set "AX_SDK_DIR=%PARENT_DIR%\ax-sdk"
+  ) else if exist "%USERPROFILE%\Desktop\ax-sdk\CMakeLists.txt" (
+    set "AX_SDK_DIR=%USERPROFILE%\Desktop\ax-sdk"
+  ) else if exist "%USERPROFILE%\ax-sdk\CMakeLists.txt" (
+    set "AX_SDK_DIR=%USERPROFILE%\ax-sdk"
+  ) else if exist "%GENX_ROOT%\ax-sdk\CMakeLists.txt" (
+    set "AX_SDK_DIR=%GENX_ROOT%\ax-sdk"
+  )
 )
 
-if not defined RESOLVED_ROOT (
-    echo [@=FATAL] Could not locate repository root containing engines\pcsx2_ax\CMakeLists.txt.
-    exit /b 1
-)
-if "%RESOLVED_ROOT:~-1%"=="\" set "RESOLVED_ROOT=%RESOLVED_ROOT:~0,-1%"
-
-set "RESOLVED_SRC=%RESOLVED_ROOT%\engines\pcsx2_ax"
-set "RESOLVED_LLVM_ROOT=%RESOLVED_ROOT:\=/%"
-
-if not defined VSCMD_VER (
-    if exist "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat" (
-        call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul 2>&1
+if not defined LLVM_BIN (
+  if exist "%ProgramFiles%\LLVM\bin\clang-cl.exe" (
+    set "LLVM_BIN=%ProgramFiles%\LLVM\bin"
+  ) else if exist "C:\Program Files\LLVM\bin\clang-cl.exe" (
+    set "LLVM_BIN=C:\Program Files\LLVM\bin"
+  ) else (
+    for /f "delims=" %%C in ('where clang-cl.exe 2^>nul') do (
+      set "LLVM_BIN=%%~dpC"
+      goto :found_llvm_bin
     )
+  )
+)
+:found_llvm_bin
+if defined LLVM_BIN (
+  if "!LLVM_BIN:~-1!"=="\" set "LLVM_BIN=!LLVM_BIN:~0,-1!"
+  set "PATH=!LLVM_BIN!;%PATH%"
 )
 
-set "CMAKE_EXE=C:\Program Files\CMake\bin\cmake.exe"
-if not exist "%CMAKE_EXE%" set "CMAKE_EXE=C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+if not defined VS_DEV_CMD (
+  if exist "%ProgramFiles%\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat" (
+    set "VS_DEV_CMD=%ProgramFiles%\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"
+  ) else if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" (
+    set "VS_DEV_CMD=%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+  ) else if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" (
+    set "VS_DEV_CMD=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
+  )
+)
 
-set "NINJA_EXE=C:\Users\nick_\AppData\Local\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe\ninja.exe"
-if not exist "%NINJA_EXE%" set "NINJA_EXE=C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
-
-set "CLANG_CL_EXE=C:\Program Files\LLVM\bin\clang-cl.exe"
-if not exist "%CLANG_CL_EXE%" set "CLANG_CL_EXE=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang-cl.exe"
-
-set "LLD_LINK_EXE=C:\Program Files\LLVM\bin\lld-link.exe"
-if not exist "%LLD_LINK_EXE%" set "LLD_LINK_EXE=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\lld-link.exe"
-
-set "LLVM_PROFDATA_EXE=C:\Program Files\LLVM\bin\llvm-profdata.exe"
-if not exist "%LLVM_PROFDATA_EXE%" set "LLVM_PROFDATA_EXE=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\llvm-profdata.exe"
-
-for %%P in ("%CMAKE_EXE%" "%NINJA_EXE%" "%CLANG_CL_EXE%" "%LLD_LINK_EXE%") do (
-    if not exist "%%~P" (
-        echo [@=FATAL] Missing required tool: %%~P
-        exit /b 1
-    )
+echo [PS2-ENV] GENX_ROOT     = %GENX_ROOT%
+echo [PS2-ENV] PARENT_DIR    = %PARENT_DIR%
+echo [PS2-ENV] PS2_SRC_DIR   = %PS2_SRC_DIR%
+echo [PS2-ENV] PS2_BUILD_DIR = %PS2_BUILD_DIR%
+echo [PS2-ENV] PGO_PROF_DIR  = %PGO_PROF_DIR%
+echo [PS2-ENV] NINJA_JOBS    = %NINJA_JOBS%
+if defined AX_SDK_DIR (
+  echo [PS2-ENV] AX_SDK_DIR    = %AX_SDK_DIR%
+) else (
+  echo [PS2-ENV] AX_SDK_DIR    = ^(not found locally; CMake fallback active^)
+)
+if defined LLVM_BIN (
+  echo [PS2-ENV] LLVM_BIN      = %LLVM_BIN%
+) else (
+  echo [PS2-ENV] LLVM_BIN      = ^(using PATH^)
 )
 
 endlocal & (
-    set "PROJ_DIR=%RESOLVED_ROOT%"
-    set "PCSX2_AX_SRC=%RESOLVED_SRC%"
-    set "LLVM_PROJ_DIR=%RESOLVED_LLVM_ROOT%"
-    set "CMAKE_EXE=%CMAKE_EXE%"
-    set "NINJA_EXE=%NINJA_EXE%"
-    set "CLANG_CL_EXE=%CLANG_CL_EXE%"
-    set "LLD_LINK_EXE=%LLD_LINK_EXE%"
-    set "LLVM_PROFDATA_EXE=%LLVM_PROFDATA_EXE%"
-    set "PATH=%~dp0;%PATH%"
+  set "GENX_ROOT=%GENX_ROOT%"
+  set "PARENT_DIR=%PARENT_DIR%"
+  set "PS2_SRC_DIR=%PS2_SRC_DIR%"
+  set "PS2_BUILD_DIR=%PS2_BUILD_DIR%"
+  set "PGO_PROF_DIR=%PGO_PROF_DIR%"
+  set "NINJA_JOBS=%NINJA_JOBS%"
+  set "AX_SDK_DIR=%AX_SDK_DIR%"
+  set "LLVM_BIN=%LLVM_BIN%"
+  set "VS_DEV_CMD=%VS_DEV_CMD%"
+  set "PATH=%PATH%"
 )
 exit /b 0

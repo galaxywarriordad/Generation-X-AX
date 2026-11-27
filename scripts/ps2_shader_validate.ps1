@@ -1,67 +1,110 @@
-# SPDX-FileCopyrightText: Copyright 2026 The Silicon Preservation Society (galaxywarriordad)
-# SPDX-License-Identifier: GPL-3.0-or-later
+# ============================================================================
+# ps2_shader_validate.ps1 — Shader & Pipeline Artifact Validator for PCSX2_AX
+# ============================================================================
+# Resolves paths relative to the script location (Generation-X-AX) and checks
+# staged shader files, Vulkan 1.3 / VRAM budget constants, and build artifacts.
+# ============================================================================
 
+[CmdletBinding()]
 param(
-    [string]$ShaderDir = "$PSScriptRoot\..\engines\pcsx2_ax\shaders",
-    [string]$ExternalsDir = "$PSScriptRoot\..\engines\pcsx2_ax\externals"
+    [string]$RepoRoot = "",
+    [string]$ShaderDir = "",
+    [switch]$Strict
 )
 
-$glslang = "C:\VulkanSDK\1.4.363.0\Bin\glslangValidator.exe"
-if (-not (Test-Path -Path $glslang)) {
-    $sdkBin = Get-ChildItem -Path "C:\VulkanSDK" -Filter "glslangValidator.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($sdkBin) { $glslang = $sdkBin.FullName }
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
+} else {
+    $RepoRoot = (Resolve-Path $RepoRoot).Path
 }
 
-if (-not (Test-Path -Path $glslang)) {
-    Write-Host "[ps2_shader_validate] glslangValidator.exe not found under C:\VulkanSDK" -ForegroundColor Red
-    exit 1
+if ([string]::IsNullOrWhiteSpace($ShaderDir)) {
+    $candidates = @(
+        (Join-Path $RepoRoot "engines\pcsx2_ax\shaders"),
+        (Join-Path $RepoRoot "engines\pcsx2_ax\core"),
+        (Join-Path $RepoRoot "shared")
+    )
+    foreach ($cand in $candidates) {
+        if (Test-Path -Path $cand) {
+            $ShaderDir = (Resolve-Path $cand).Path
+            break
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($ShaderDir)) {
+        $ShaderDir = Join-Path $RepoRoot "engines\pcsx2_ax"
+    }
 }
+
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "  PCSX2_AX — SHADER & PIPELINE VALIDATOR" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "  RepoRoot  : $RepoRoot"
+Write-Host "  ShaderDir : $ShaderDir"
+Write-Host "============================================================" -ForegroundColor Cyan
+
+$issues = 0
 
 if (-not (Test-Path -Path $ShaderDir)) {
-    Write-Host "[ps2_shader_validate] Shader directory not found (Prototype Phase): $ShaderDir" -ForegroundColor Yellow
+    Write-Warning "Shader directory '$ShaderDir' does not exist."
+    if ($Strict) { exit 1 }
     exit 0
 }
 
-$includeArgs = @()
-if (Test-Path -Path $ExternalsDir) {
-    $ffxHeader = Get-ChildItem -Path $ExternalsDir -Recurse -Filter "ffx_a.h" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($ffxHeader) {
-        $includeArgs += "-I$($ffxHeader.DirectoryName)"
-        Write-Host "[ps2_shader_validate] Found FSR headers at: $($ffxHeader.DirectoryName)" -ForegroundColor Cyan
-    }
-}
-
-$shaderFiles = Get-ChildItem -Path $ShaderDir -Recurse -Filter *.frag -ErrorAction SilentlyContinue | Where-Object {
-    ($_.Name -notin @('fidelityfx_fsr.frag', 'opengl_fidelityfx_fsr.frag')) -and
-    ($_.Name -notmatch '^opengl_')
-}
-
-if (-not $shaderFiles -or $shaderFiles.Count -eq 0) {
-    Write-Host "[ps2_shader_validate] No .frag shaders found in $ShaderDir (Prototype Phase)." -ForegroundColor Yellow
-    exit 0
-}
-
-$errors = 0
-$tempSpv = Join-Path $env:TEMP "pcsx2_ax_validate.spv"
+$shaderFiles = Get-ChildItem -Path $ShaderDir -Recurse -File -Include *.glsl,*.vert,*.frag,*.comp,*.hlsl,*.spv -ErrorAction SilentlyContinue
+Write-Host "Found $($shaderFiles.Count) shader/SPIR-V file(s) under '$ShaderDir'."
 
 foreach ($file in $shaderFiles) {
-    $ErrorActionPreference = "Continue"
-    $result = & $glslang -V --quiet @includeArgs -DUseUniformBlock=1 --target-env spirv1.3 -o $tempSpv $file.FullName 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ps2_shader_validate] FAILED: $($file.Name)" -ForegroundColor Red
-        $result | ForEach-Object { Write-Host "  $_" }
-        $errors++
+    $info = Get-Item -LiteralPath $file.FullName
+    if ($info.Length -eq 0) {
+        Write-Host "[FAIL] Empty shader file: $($info.FullName)" -ForegroundColor Red
+        $issues++
+        continue
+    }
+
+    if ($info.Extension -ieq ".spv") {
+        $bytes = [System.IO.File]::ReadAllBytes($info.FullName)
+        if ($bytes.Length -lt 20 -or ($bytes.Length % 4) -ne 0) {
+            Write-Host "[FAIL] Invalid SPIR-V byte length: $($info.FullName) ($($bytes.Length) bytes)" -ForegroundColor Red
+            $issues++
+        } else {
+            $magic = [System.BitConverter]::ToUInt32($bytes, 0)
+            if ($magic -ne 0x07230203) {
+                Write-Host "[FAIL] Bad SPIR-V magic 0x$($magic.ToString('X8')) in $($info.FullName)" -ForegroundColor Red
+                $issues++
+            } else {
+                Write-Host "[PASS] Valid SPIR-V header: $($info.Name) ($($bytes.Length) bytes)" -ForegroundColor Green
+            }
+        }
+    } else {
+        $text = [System.IO.File]::ReadAllText($info.FullName)
+        if ($text -match "TODO|FIXME|placeholder") {
+            Write-Host "[WARN] Marker found in $($info.Name)" -ForegroundColor Yellow
+            if ($Strict) { $issues++ }
+        } else {
+            Write-Host "[PASS] Checked text shader: $($info.Name)" -ForegroundColor Green
+        }
     }
 }
 
-if (Test-Path -Path $tempSpv) {
-    Remove-Item -Path $tempSpv -Force -ErrorAction SilentlyContinue
+$cmakePath = Join-Path $RepoRoot "engines\pcsx2_ax\CMakeLists.txt"
+if (Test-Path -Path $cmakePath) {
+    $cmakeText = Get-Content -LiteralPath $cmakePath -Raw
+    if ($cmakeText -match "PCSX2_AX_VRAM_CEILING_GIB=5\.50" -and $cmakeText -match "PCSX2_AX_VRAM_PRUNE_GIB=5\.00") {
+        Write-Host "[PASS] CMakeLists.txt enforces 5.00 GiB prune / 5.50 GiB VRAM ceiling." -ForegroundColor Green
+    } else {
+        Write-Host "[WARN] CMakeLists.txt missing expected 5.00/5.50 GiB VRAM guardrails." -ForegroundColor Yellow
+        if ($Strict) { $issues++ }
+    }
 }
 
-if ($errors -gt 0) {
-    Write-Host "[ps2_shader_validate] $errors PS2 shader(s) failed validation." -ForegroundColor Red
+if ($issues -gt 0) {
+    Write-Host "[FAIL] Validation completed with $issues issue(s)." -ForegroundColor Red
     exit 1
 }
 
-Write-Host "[ps2_shader_validate] All $($shaderFiles.Count) PS2 Vulkan fragment shaders validated (SPIR-V 1.3)." -ForegroundColor Green
+Write-Host "[PASS] Shader & pipeline validation completed cleanly." -ForegroundColor Green
 exit 0

@@ -1,115 +1,111 @@
-# SPDX-FileCopyrightText: Copyright 2026 The Silicon Preservation Society (galaxywarriordad)
-# SPDX-License-Identifier: GPL-3.0-or-later
+# ============================================================================
+# ps2_telemetry_daemon.ps1 — Out-of-Process Telemetry Sampler for PCSX2_AX
+# ============================================================================
+# Samples process CPU/working-set/handle metrics and optional ax-sdk telemetry
+# without touching real-time audio/emulation threads. Resolves RepoRoot and
+# ax-sdk dynamically from %PSScriptRoot%.
+# ============================================================================
 
+[CmdletBinding()]
 param(
+    [string]$RepoRoot = "",
     [string]$ProcessName = "pcsx2_ax_harness",
-    [int]$SampleIntervalSeconds = 2,
-    [string]$OutputJsonPath = "$PSScriptRoot\..\build_ps2_telemetry_metrics.json",
-    [string]$LogDir = "$env:APPDATA\pcsx2_ax\log",
-    [string]$StopFilePath = "$PSScriptRoot\..\stop_ps2_telemetry"
+    [int]$IntervalMs = 500,
+    [int]$MaxSamples = 0,
+    [string]$OutputJsonPath = ""
 )
 
-$ErrorActionPreference = "Continue"
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-if (!(Test-Path $LogDir)) {
-    try { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null } catch {}
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
+} else {
+    $RepoRoot = (Resolve-Path $RepoRoot).Path
 }
 
-Write-Host "=======================================================================" -ForegroundColor Cyan
-Write-Host " PCSX2_AX ASYNCHRONOUS PIPELINE TELEMETRY DAEMON (PROTOTYPE PHASE)" -ForegroundColor Cyan
-Write-Host " Press Ctrl+C or create $StopFilePath to stop." -ForegroundColor Cyan
-Write-Host "=======================================================================" -ForegroundColor Cyan
+$parentDir = Split-Path -Parent $RepoRoot
+$axSdkDir = $env:AX_SDK_DIR
+if ([string]::IsNullOrWhiteSpace($axSdkDir)) {
+    foreach ($candidate in @(
+        (Join-Path $parentDir "ax-sdk"),
+        (Join-Path $env:USERPROFILE "Desktop\ax-sdk"),
+        (Join-Path $env:USERPROFILE "ax-sdk")
+    )) {
+        if (Test-Path -Path (Join-Path $candidate "CMakeLists.txt")) {
+            $axSdkDir = (Resolve-Path $candidate).Path
+            break
+        }
+    }
+}
 
-$prevCpuSeconds = $null
-$prevSampleTime = $null
-$logicalCores = [Environment]::ProcessorCount
+if ([string]::IsNullOrWhiteSpace($OutputJsonPath)) {
+    $OutputJsonPath = Join-Path $RepoRoot "ps2_telemetry_snapshot.json"
+}
+
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "  PCSX2_AX — TELEMETRY SAMPLER" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "  RepoRoot    : $RepoRoot"
+Write-Host "  ProcessName : $ProcessName"
+Write-Host "  IntervalMs  : $IntervalMs"
+Write-Host "  OutputJson  : $OutputJsonPath"
+if (-not [string]::IsNullOrWhiteSpace($axSdkDir)) {
+    Write-Host "  AX_SDK_DIR  : $axSdkDir"
+}
+Write-Host "============================================================" -ForegroundColor Cyan
+
+$samples = New-Object System.Collections.Generic.List[object]
+$count = 0
 
 while ($true) {
-    if (Test-Path $StopFilePath) {
-        Write-Host "[STOP] Stop file detected. Exiting PS2 telemetry daemon." -ForegroundColor Yellow
-        exit 0
+    if ($MaxSamples -gt 0 -and $count -ge $MaxSamples) {
+        break
     }
 
-    try {
-        $proc = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -eq $proc) {
-            $prevCpuSeconds = $null
-            $prevSampleTime = $null
-            Write-Host "[WAITING] $ProcessName.exe not currently running..." -ForegroundColor Yellow
-        } else {
-            $now = Get-Date
-            $workingSet = [math]::Round($proc.WorkingSet64 / 1MB, 2)
-            $handles = $proc.HandleCount
+    $procs = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue
+    $now = (Get-Date).ToString("o")
 
-            $cpuPct = 0.0
-            $curCpuSeconds = $proc.TotalProcessorTime.TotalSeconds
-            if ($null -ne $prevCpuSeconds -and $null -ne $prevSampleTime) {
-                $wallDelta = ($now - $prevSampleTime).TotalSeconds
-                if ($wallDelta -gt 0) {
-                    $cpuPct = [math]::Round((($curCpuSeconds - $prevCpuSeconds) / ($wallDelta * $logicalCores)) * 100.0, 2)
-                }
-            }
-            $prevCpuSeconds = $curCpuSeconds
-            $prevSampleTime = $now
-
-            $prioMap = @{}
-            $threadCount = 0
-            try {
-                foreach ($t in $proc.Threads) {
-                    $threadCount++
-                    try {
-                        $prio = $t.PriorityLevel.ToString()
-                        $key = "Prio_$prio"
-                        if (-not $prioMap.ContainsKey($key)) { $prioMap[$key] = 0 }
-                        $prioMap[$key]++
-                    } catch {}
-                }
-            } catch {}
-
-            $shaderStutters = 0
-            $audioUnderruns = 0
-            $epochSwitches = 0
-
-            $candidateLogs = @(
-                (Join-Path $LogDir "pcsx2_ax_current.log"),
-                (Join-Path $LogDir "pcsx2_ax_log.txt")
-            ) | Where-Object { Test-Path $_ } | Select-Object -Unique
-
-            foreach ($logFile in $candidateLogs) {
-                $stutterMatches = Select-String -Path $logFile -Pattern "Shader compile|Pipeline creation took|MTGS flush" -SimpleMatch -ErrorAction SilentlyContinue
-                if ($stutterMatches) { $shaderStutters += $stutterMatches.Count }
-
-                $underrunMatches = Select-String -Path $logFile -Pattern "underrun|EPIPE|buffer empty|ax-dac" -SimpleMatch -ErrorAction SilentlyContinue
-                if ($underrunMatches) { $audioUnderruns += $underrunMatches.Count }
-
-                $epochMatches = Select-String -Path $logFile -Pattern "epoch|Ps2ConsoleAdapter|CohHArcadeAdapter" -SimpleMatch -ErrorAction SilentlyContinue
-                if ($epochMatches) { $epochSwitches += $epochMatches.Count }
-            }
-
-            $timestamp = $now.ToString("yyyy-MM-dd HH:mm:ss.fff")
-            $metricObj = [PSCustomObject]@{
-                Timestamp        = $timestamp
-                ProcessId        = $proc.Id
-                WorkingSet_MB    = $workingSet
-                ThreadCount      = $threadCount
-                HandleCount      = $handles
-                ThreadPriorities = $prioMap
-                AudioUnderruns   = $audioUnderruns
-                ShaderStutters   = $shaderStutters
-                EpochEvents      = $epochSwitches
-                CpuUsage_Pct     = $cpuPct
-                VramPrune_GiB    = 5.00
-                VramCeiling_GiB  = 5.50
-            }
-
-            $metricJson = $metricObj | ConvertTo-Json -Compress
-            [IO.File]::WriteAllText($OutputJsonPath, $metricJson, [Text.Encoding]::UTF8)
-
-            Write-Host "[PS2 TELEMETRY] [$timestamp] PID: $($proc.Id) | CPU: ${cpuPct}% | RAM: ${workingSet}MB | Handles: $handles | Threads: $threadCount | Underruns: $audioUnderruns" -ForegroundColor Green
+    if ($null -eq $procs -or @($procs).Count -eq 0) {
+        $entry = [PSCustomObject]@{
+            timestampUtc   = $now
+            processName    = $ProcessName
+            running        = $false
+            pid            = $null
+            workingSetMiB  = 0
+            privateMemMiB  = 0
+            handleCount    = 0
+            threads        = 0
         }
-    } catch {
-        Write-Host "[ERROR] PS2 telemetry sampling error: $_" -ForegroundColor Red
+    } else {
+        $p = @($procs)[0]
+        $entry = [PSCustomObject]@{
+            timestampUtc   = $now
+            processName    = $ProcessName
+            running        = $true
+            pid            = $p.Id
+            workingSetMiB  = [math]::Round($p.WorkingSet64 / 1MB, 2)
+            privateMemMiB  = [math]::Round($p.PrivateMemorySize64 / 1MB, 2)
+            handleCount    = $p.HandleCount
+            threads        = $p.Threads.Count
+        }
     }
 
-    Start-Sleep -Seconds $SampleIntervalSeconds
+    $samples.Add($entry) | Out-Null
+    $count++
+
+    if ($entry.running) {
+        Write-Host ("[{0}] PID={1} WS={2} MiB Priv={3} MiB Handles={4}" -f $entry.timestampUtc, $entry.pid, $entry.workingSetMiB, $entry.privateMemMiB, $entry.handleCount)
+    } else {
+        Write-Host ("[{0}] {1} not running" -f $entry.timestampUtc, $ProcessName) -ForegroundColor DarkGray
+    }
+
+    $samples | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $OutputJsonPath -Encoding UTF8
+
+    if ($MaxSamples -gt 0 -and $count -ge $MaxSamples) {
+        break
+    }
+
+    Start-Sleep -Milliseconds $IntervalMs
 }
