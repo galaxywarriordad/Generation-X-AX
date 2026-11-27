@@ -2,17 +2,11 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 :: ============================================================================
-:: PS2_PGO_config.bat — Interactive PGO & Build Navigation Hub (PCSX2_AX)
+:: PS2_PGO_config.bat - [0] Build & Configure App Settings Hub (PCSX2_AX)
 :: ============================================================================
-:: Modeled after Eden's PGO_config.bat workflow: acts as the interactive UI
-:: navigation menu for PS2 / COH-H (PCSX2x6) PGO stages, log tailing, and
-:: cache/build hygiene. Does NOT execute cmake/ninja inline; dispatches to
-:: the standalone stage/utility scripts instead.
-::
-:: Supported placements:
-::   - C:\Users\nick_\Desktop\Generation-X-AX\PS2_PGO_config.bat
-::   - C:\Users\nick_\Desktop\Generation-X-AX\engines\pcsx2_ax\PS2_PGO_config.bat
-::   - C:\Users\nick_\Desktop\Generation-X-AX\scripts\PS2_PGO_config.bat
+:: Interactive hub for PCSX2_AX / PCSX2x6 (COH-H) app configuration,
+:: [0] build & configuration stages (Stage 0 / 0LD / 0I),
+:: [1] instrumentation (Stage 1), and [2] optimisation (Stage 2).
 :: ============================================================================
 
 set "SCRIPT_DIR=%~dp0"
@@ -53,7 +47,7 @@ if not exist "%ENV_SCRIPT%" if exist "%GENX_ROOT%\_ps2_toolchain_env.bat" set "E
 :menu_loop
 cls
 echo ============================================================================
-echo   PCSX2_AX / PCSX2x6 (COH-H) — INTERACTIVE PGO NAVIGATION HUB
+echo   PCSX2_AX / PCSX2x6 (COH-H) - PGO ^& BUILD CONFIGURATION HUB
 echo ============================================================================
 echo   GENX_ROOT     : %GENX_ROOT%
 echo   PS2_SRC_DIR   : %PS2_SRC_DIR%
@@ -62,21 +56,21 @@ echo   PGO_PROF_DIR  : %PGO_PROF_DIR%
 if defined AX_SDK_DIR (
   echo   AX_SDK_DIR    : %AX_SDK_DIR%
 ) else (
-  echo   AX_SDK_DIR    : ^(not detected locally; CMake fallback applies^)
+  echo   AX_SDK_DIR    : (not detected locally; CMake fallback applies)
 )
 echo   Jobs (-j)     : %NINJA_JOBS%
 echo ============================================================================
-echo   [0]  Stage 0   — Control Baseline Build (PS2_PGO_stage0.bat)
-echo   [0LD] Stage 0LD — Clean Diagnostics Build (PS2_PGO_stage0LD.bat)
-echo   [0I] Stage 0I  — Incremental Delta Rebuild (PS2_PGO_stage0I.bat)
-echo   [1]  Stage 1   — Instrumented PGO Profile Build (PS2_PGO_stage1.bat)
-echo   [2]  Stage 2   — Merged Profile ^& Final Build (PS2_PGO_stage2.bat)
+echo   [0]   Build ^& Configure App Settings (PS2_PGO_stage0.bat)
+echo   [0LD] Clean Diagnostics Build        (PS2_PGO_stage0LD.bat)
+echo   [0I]  Incremental Delta Rebuild      (PS2_PGO_stage0I.bat)
+echo   [1]   Instrumentation Build          (PS2_PGO_stage1.bat)
+echo   [2]   Optimisation Build             (PS2_PGO_stage2.bat)
 echo   --------------------------------------------------------------------------
-echo   [E]  Inspect / Refresh Toolchain Environment (_ps2_toolchain_env.bat)
-echo   [L]  Tail Latest Build / Session Log (ps2_tail_log.ps1)
-echo   [V]  Validate Shaders ^& VRAM Guardrails (ps2_shader_validate.ps1)
-echo   [C]  Clean Stale CMakeCache.txt in PS2_BUILD_DIR
-echo   [Q]  Exit
+echo   [E]   Inspect / Refresh Toolchain Environment (_ps2_toolchain_env.bat)
+echo   [L]   Tail Latest Build / Session Log (ps2_tail_log.ps1)
+echo   [V]   Validate Shaders ^& VRAM Guardrails (ps2_shader_validate.ps1)
+echo   [C]   Clean Stale CMakeCache.txt in PS2_BUILD_DIR
+echo   [Q]   Exit
 echo ============================================================================
 set "CHOICE="
 set /p "CHOICE=Select option: "
@@ -112,8 +106,8 @@ pause
 goto :menu_loop
 
 :run_stage1
-echo [NOTE] Avoid manual CPU affinity overrides during PGO profile collection.
-echo [NOTE] Exit cleanly so .profraw files flush before Stage 2 merge.
+echo [NOTE] [1] Instrumentation: avoid manual CPU affinity overrides during profile collection.
+echo [NOTE] Exit cleanly so .profraw files flush before [2] Optimisation merge.
 call :dispatch_script "PS2_PGO_stage1.bat"
 pause
 goto :menu_loop

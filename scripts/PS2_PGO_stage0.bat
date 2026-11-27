@@ -2,11 +2,10 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 :: ============================================================================
-:: PS2_PGO_stage0.bat — Stage 0 Control Baseline Build (PCSX2_AX)
+:: PS2_PGO_stage0.bat - [0] Build & Configure App Settings (PCSX2_AX)
 :: ============================================================================
-:: Standalone Stage 0 control build script for PCSX2_AX (does NOT invoke
-:: PS2_PGO_config.bat). Resolves paths dynamically from %~dp0 so relocating
-:: Generation-X-AX (e.g. C:\Users\nick_\Desktop\Generation-X-AX) works cleanly.
+:: Configures CMake + Ninja app settings and builds the Stage 0 baseline for
+:: PCSX2_AX using the shared _ps2_toolchain_env.bat resolver.
 :: ============================================================================
 
 set "SCRIPT_DIR=%~dp0"
@@ -14,37 +13,14 @@ if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 for %%I in ("%SCRIPT_DIR%\..") do set "GENX_ROOT=%%~fI"
 for %%I in ("%GENX_ROOT%\..") do set "PARENT_DIR=%%~fI"
 
+if exist "%SCRIPT_DIR%\_ps2_toolchain_env.bat" (
+  call "%SCRIPT_DIR%\_ps2_toolchain_env.bat"
+  if errorlevel 1 exit /b %ERRORLEVEL%
+)
+
 if not defined PS2_SRC_DIR set "PS2_SRC_DIR=%GENX_ROOT%\engines\pcsx2_ax"
 if not defined PS2_BUILD_DIR set "PS2_BUILD_DIR=%GENX_ROOT%\build_ps2_stage0"
 if not defined NINJA_JOBS set "NINJA_JOBS=4"
-
-if not defined AX_SDK_DIR (
-  if exist "%PARENT_DIR%\ax-sdk\CMakeLists.txt" (
-    set "AX_SDK_DIR=%PARENT_DIR%\ax-sdk"
-  ) else if exist "%USERPROFILE%\Desktop\ax-sdk\CMakeLists.txt" (
-    set "AX_SDK_DIR=%USERPROFILE%\Desktop\ax-sdk"
-  ) else if exist "%USERPROFILE%\ax-sdk\CMakeLists.txt" (
-    set "AX_SDK_DIR=%USERPROFILE%\ax-sdk"
-  )
-)
-
-if not defined LLVM_BIN (
-  if exist "%ProgramFiles%\LLVM\bin\clang-cl.exe" (
-    set "LLVM_BIN=%ProgramFiles%\LLVM\bin"
-  ) else if exist "C:\Program Files\LLVM\bin\clang-cl.exe" (
-    set "LLVM_BIN=C:\Program Files\LLVM\bin"
-  ) else (
-    for /f "delims=" %%C in ('where clang-cl.exe 2^>nul') do (
-      set "LLVM_BIN=%%~dpC"
-      goto :found_s0_llvm
-    )
-  )
-)
-:found_s0_llvm
-if defined LLVM_BIN (
-  if "!LLVM_BIN:~-1!"=="\" set "LLVM_BIN=!LLVM_BIN:~0,-1%"
-  set "PATH=!LLVM_BIN!;%PATH%"
-)
 
 set "LOG_SUMMARY=%GENX_ROOT%\build_ps2_stage0_summary.log"
 set "LOG_DETAIL=%GENX_ROOT%\build_ps2_stage0_triage.log"
@@ -79,7 +55,7 @@ goto :parse_s0_args
 set "STAMP=%DATE% %TIME:~0,8%"
 
 echo ============================================================================
-echo   PCSX2_AX — STAGE 0 CONTROL BASELINE BUILD (%STAMP%)
+echo   PCSX2_AX - [0] BUILD ^& CONFIGURE APP SETTINGS (%STAMP%)
 echo ============================================================================
 echo   GENX_ROOT     : %GENX_ROOT%
 echo   PS2_SRC_DIR   : %PS2_SRC_DIR%
@@ -87,7 +63,7 @@ echo   PS2_BUILD_DIR : %PS2_BUILD_DIR%
 if defined AX_SDK_DIR (
   echo   AX_SDK_DIR    : %AX_SDK_DIR%
 ) else (
-  echo   AX_SDK_DIR    : ^(not found locally; CMake fallback applies^)
+  echo   AX_SDK_DIR    : (not found locally; CMake fallback applies)
 )
 echo   PLANNING_ONLY : %PLANNING_ONLY%
 echo   NINJA_JOBS    : %NINJA_JOBS%
@@ -98,8 +74,21 @@ if not exist "%PS2_SRC_DIR%\CMakeLists.txt" (
   exit /b 1
 )
 
->> "%LOG_SESSION%" echo [%STAMP%] Started PS2 Stage 0 Control Build (PLANNING_ONLY=%PLANNING_ONLY%, CLEAN=%CLEAN_FIRST%)
+where cmake.exe >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] cmake.exe not found in PATH or C:\Program Files\CMake\bin 1>&2
+  exit /b 1
+)
+
+where ninja.exe >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] ninja.exe not found in PATH or C:\Program Files\ninja-win 1>&2
+  exit /b 1
+)
+
+>> "%LOG_SESSION%" echo [%STAMP%] Started PS2 [0] Build ^& Configure (PLANNING_ONLY=%PLANNING_ONLY%, CLEAN=%CLEAN_FIRST%)
 > "%LOG_SUMMARY%" echo Start Timestamp : %STAMP%
+>> "%LOG_SUMMARY%" echo Role            : [0] Build ^& Configure App Settings
 >> "%LOG_SUMMARY%" echo Target          : pcsx2_ax_harness (Stage 0 / PLANNING_ONLY=%PLANNING_ONLY%)
 >> "%LOG_SUMMARY%" echo Source          : %PS2_SRC_DIR%
 >> "%LOG_SUMMARY%" echo Build           : %PS2_BUILD_DIR%
@@ -131,7 +120,13 @@ if exist "%PS2_BUILD_DIR%\CMakeCache.txt" (
   )
 )
 
-if not exist "%PS2_BUILD_DIR%" mkdir "%PS2_BUILD_DIR%"
+if not exist "%PS2_BUILD_DIR%" (
+  mkdir "%PS2_BUILD_DIR%"
+  if errorlevel 1 (
+    echo [ERROR] Failed to create build directory "%PS2_BUILD_DIR%" 1>&2
+    exit /b 1
+  )
+)
 
 set "CMAKE_ARGS=-S "%PS2_SRC_DIR%" -B "%PS2_BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DPCSX2_AX_PLANNING_ONLY=%PLANNING_ONLY% -DPCSX2_AX_ENABLE_VULKAN_1_3=ON -DPCSX2_AX_BUILD_HARNESS=ON"
 
@@ -161,7 +156,7 @@ set "CFG_ERR=%ERRORLEVEL%"
 if not "%CFG_ERR%"=="0" (
   echo [FAIL] CMake configure failed (%CFG_ERR%). See "%LOG_DETAIL%". 1>&2
   >> "%LOG_SUMMARY%" echo Result          : CONFIG_FAILED (%CFG_ERR%)
-  >> "%LOG_SESSION%" echo [%DATE% %TIME:~0,8%] FAILED PS2 Stage 0 configure (%CFG_ERR%)
+  >> "%LOG_SESSION%" echo [%DATE% %TIME:~0,8%] FAILED PS2 [0] configure (%CFG_ERR%)
   exit /b %CFG_ERR%
 )
 
@@ -174,17 +169,17 @@ if not "%BUILD_ERR%"=="0" (
   echo [FAIL] Ninja build failed (%BUILD_ERR%). Inspect "%LOG_DETAIL%". 1>&2
   >> "%LOG_SUMMARY%" echo End Timestamp   : %END_STAMP%
   >> "%LOG_SUMMARY%" echo Result          : BUILD_FAILED (%BUILD_ERR%)
-  >> "%LOG_SESSION%" echo [%END_STAMP%] FAILED PS2 Stage 0 build (%BUILD_ERR%)
+  >> "%LOG_SESSION%" echo [%END_STAMP%] FAILED PS2 [0] build (%BUILD_ERR%)
   echo.
   echo --- Compiler errors from %LOG_DETAIL% ---
   findstr /I /C:"fatal error:" /C:"error:" "%LOG_DETAIL%"
   exit /b %BUILD_ERR%
 )
 
-echo [PASS] PS2 Stage 0 build succeeded!
+echo [PASS] PS2 [0] Build ^& Configure succeeded!
 >> "%LOG_SUMMARY%" echo End Timestamp   : %END_STAMP%
 >> "%LOG_SUMMARY%" echo Result          : BUILD_SUCCEEDED (0)
->> "%LOG_SESSION%" echo [%END_STAMP%] SUCCEEDED PS2 Stage 0 build
+>> "%LOG_SESSION%" echo [%END_STAMP%] SUCCEEDED PS2 [0] build
 
 if exist "%PS2_BUILD_DIR%\pcsx2_ax_harness.exe" (
   echo [PASS] Built harness: %PS2_BUILD_DIR%\pcsx2_ax_harness.exe

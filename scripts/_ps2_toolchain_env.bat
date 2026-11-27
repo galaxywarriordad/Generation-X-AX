@@ -2,15 +2,15 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 :: ============================================================================
-:: _ps2_toolchain_env.bat — Shared Environment Resolver for PCSX2_AX Scripts
+:: _ps2_toolchain_env.bat - Shared Environment Resolver for PCSX2_AX Scripts
 :: ============================================================================
-:: Resolves GENX_ROOT from %~dp0 (supporting C:\Users\nick_\Desktop\Generation-X-AX
-:: or any other moved directory), locates ax-sdk and LLVM clang-cl/ninja/cmake,
-:: and exports environment variables to the calling batch script.
+:: Resolves GENX_ROOT from %~dp0, locates ax-sdk, LLVM clang-cl, Ninja, and
+:: CMake, and exports resolved environment variables to the caller.
 :: ============================================================================
 
 set "SCRIPT_DIR=%~dp0"
-for %%I in ("%SCRIPT_DIR%..") do set "GENX_ROOT=%%~fI"
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+for %%I in ("%SCRIPT_DIR%\..") do set "GENX_ROOT=%%~fI"
 for %%I in ("%GENX_ROOT%\..") do set "PARENT_DIR=%%~fI"
 
 if not defined PS2_SRC_DIR set "PS2_SRC_DIR=%GENX_ROOT%\engines\pcsx2_ax"
@@ -44,8 +44,44 @@ if not defined LLVM_BIN (
 )
 :found_llvm_bin
 if defined LLVM_BIN (
-  if "!LLVM_BIN:~-1!"=="\" set "LLVM_BIN=!LLVM_BIN:~0,-1!"
+  if "!LLVM_BIN:~-1!"=="\" set "LLVM_BIN=!LLVM_BIN:~0,-1%"
   set "PATH=!LLVM_BIN!;%PATH%"
+)
+
+if not defined NINJA_BIN (
+  if exist "C:\Program Files\ninja-win\ninja.exe" (
+    set "NINJA_BIN=C:\Program Files\ninja-win"
+  ) else if exist "%ProgramFiles%\ninja-win\ninja.exe" (
+    set "NINJA_BIN=%ProgramFiles%\ninja-win"
+  ) else (
+    for /f "delims=" %%N in ('where ninja.exe 2^>nul') do (
+      set "NINJA_BIN=%%~dpN"
+      goto :found_ninja_bin
+    )
+  )
+)
+:found_ninja_bin
+if defined NINJA_BIN (
+  if "!NINJA_BIN:~-1!"=="\" set "NINJA_BIN=!NINJA_BIN:~0,-1%"
+  set "PATH=!NINJA_BIN!;%PATH%"
+)
+
+if not defined CMAKE_BIN (
+  if exist "C:\Program Files\CMake\bin\cmake.exe" (
+    set "CMAKE_BIN=C:\Program Files\CMake\bin"
+  ) else if exist "%ProgramFiles%\CMake\bin\cmake.exe" (
+    set "CMAKE_BIN=%ProgramFiles%\CMake\bin"
+  ) else (
+    for /f "delims=" %%M in ('where cmake.exe 2^>nul') do (
+      set "CMAKE_BIN=%%~dpM"
+      goto :found_cmake_bin
+    )
+  )
+)
+:found_cmake_bin
+if defined CMAKE_BIN (
+  if "!CMAKE_BIN:~-1!"=="\" set "CMAKE_BIN=!CMAKE_BIN:~0,-1%"
+  set "PATH=!CMAKE_BIN!;%PATH%"
 )
 
 if not defined VS_DEV_CMD (
@@ -67,12 +103,18 @@ echo [PS2-ENV] NINJA_JOBS    = %NINJA_JOBS%
 if defined AX_SDK_DIR (
   echo [PS2-ENV] AX_SDK_DIR    = %AX_SDK_DIR%
 ) else (
-  echo [PS2-ENV] AX_SDK_DIR    = ^(not found locally; CMake fallback active^)
+  echo [PS2-ENV] AX_SDK_DIR    = (not found locally; CMake fallback active)
 )
 if defined LLVM_BIN (
   echo [PS2-ENV] LLVM_BIN      = %LLVM_BIN%
 ) else (
-  echo [PS2-ENV] LLVM_BIN      = ^(using PATH^)
+  echo [PS2-ENV] LLVM_BIN      = (using PATH)
+)
+if defined NINJA_BIN (
+  echo [PS2-ENV] NINJA_BIN     = %NINJA_BIN%
+)
+if defined CMAKE_BIN (
+  echo [PS2-ENV] CMAKE_BIN     = %CMAKE_BIN%
 )
 
 endlocal & (
@@ -84,6 +126,8 @@ endlocal & (
   set "NINJA_JOBS=%NINJA_JOBS%"
   set "AX_SDK_DIR=%AX_SDK_DIR%"
   set "LLVM_BIN=%LLVM_BIN%"
+  set "NINJA_BIN=%NINJA_BIN%"
+  set "CMAKE_BIN=%CMAKE_BIN%"
   set "VS_DEV_CMD=%VS_DEV_CMD%"
   set "PATH=%PATH%"
 )

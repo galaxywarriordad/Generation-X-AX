@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 :: ============================================================================
-:: PS2_PGO_stage0LD.bat — Stage 0LD Clean Diagnostics Build (PCSX2_AX)
+:: PS2_PGO_stage0LD.bat - Stage 0LD Clean Diagnostics Build (PCSX2_AX)
 :: ============================================================================
 :: Standalone clean diagnostics build script for PCSX2_AX (does NOT invoke
 :: PS2_PGO_config.bat). Purges prior build directory, configures CMake +
@@ -14,37 +14,14 @@ if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 for %%I in ("%SCRIPT_DIR%\..") do set "GENX_ROOT=%%~fI"
 for %%I in ("%GENX_ROOT%\..") do set "PARENT_DIR=%%~fI"
 
+if exist "%SCRIPT_DIR%\_ps2_toolchain_env.bat" (
+  call "%SCRIPT_DIR%\_ps2_toolchain_env.bat"
+  if errorlevel 1 exit /b %ERRORLEVEL%
+)
+
 if not defined PS2_SRC_DIR set "PS2_SRC_DIR=%GENX_ROOT%\engines\pcsx2_ax"
 if not defined PS2_BUILD_DIR set "PS2_BUILD_DIR=%GENX_ROOT%\build_ps2_stage0"
 if not defined NINJA_JOBS set "NINJA_JOBS=4"
-
-if not defined AX_SDK_DIR (
-  if exist "%PARENT_DIR%\ax-sdk\CMakeLists.txt" (
-    set "AX_SDK_DIR=%PARENT_DIR%\ax-sdk"
-  ) else if exist "%USERPROFILE%\Desktop\ax-sdk\CMakeLists.txt" (
-    set "AX_SDK_DIR=%USERPROFILE%\Desktop\ax-sdk"
-  ) else if exist "%USERPROFILE%\ax-sdk\CMakeLists.txt" (
-    set "AX_SDK_DIR=%USERPROFILE%\ax-sdk"
-  )
-)
-
-if not defined LLVM_BIN (
-  if exist "%ProgramFiles%\LLVM\bin\clang-cl.exe" (
-    set "LLVM_BIN=%ProgramFiles%\LLVM\bin"
-  ) else if exist "C:\Program Files\LLVM\bin\clang-cl.exe" (
-    set "LLVM_BIN=C:\Program Files\LLVM\bin"
-  ) else (
-    for /f "delims=" %%C in ('where clang-cl.exe 2^>nul') do (
-      set "LLVM_BIN=%%~dpC"
-      goto :found_0ld_llvm
-    )
-  )
-)
-:found_0ld_llvm
-if defined LLVM_BIN (
-  if "!LLVM_BIN:~-1!"=="\" set "LLVM_BIN=!LLVM_BIN:~0,-1%"
-  set "PATH=!LLVM_BIN!;%PATH%"
-)
 
 set "LOG_SUMMARY=%GENX_ROOT%\build_ps2_stage0_summary.log"
 set "LOG_DETAIL=%GENX_ROOT%\build_ps2_stage0_triage.log"
@@ -73,7 +50,7 @@ goto :parse_0ld_args
 set "STAMP=%DATE% %TIME:~0,8%"
 
 echo ============================================================================
-echo   PCSX2_AX — STAGE 0LD CLEAN DIAGNOSTICS (%STAMP%)
+echo   PCSX2_AX - STAGE 0LD CLEAN DIAGNOSTICS (%STAMP%)
 echo ============================================================================
 echo   GENX_ROOT     : %GENX_ROOT%
 echo   PS2_SRC_DIR   : %PS2_SRC_DIR%
@@ -81,7 +58,7 @@ echo   PS2_BUILD_DIR : %PS2_BUILD_DIR%
 if defined AX_SDK_DIR (
   echo   AX_SDK_DIR    : %AX_SDK_DIR%
 ) else (
-  echo   AX_SDK_DIR    : ^(not found locally; CMake fallback applies^)
+  echo   AX_SDK_DIR    : (not found locally; CMake fallback applies)
 )
 echo   PLANNING_ONLY : %PLANNING_ONLY%
 echo   NINJA_JOBS    : %NINJA_JOBS%
@@ -89,6 +66,18 @@ echo ===========================================================================
 
 if not exist "%PS2_SRC_DIR%\CMakeLists.txt" (
   echo [ERROR] CMakeLists.txt not found at "%PS2_SRC_DIR%" 1>&2
+  exit /b 1
+)
+
+where cmake.exe >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] cmake.exe not found in PATH or C:\Program Files\CMake\bin 1>&2
+  exit /b 1
+)
+
+where ninja.exe >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] ninja.exe not found in PATH or C:\Program Files\ninja-win 1>&2
   exit /b 1
 )
 
@@ -109,6 +98,10 @@ if exist "%PS2_BUILD_DIR%" (
 )
 
 mkdir "%PS2_BUILD_DIR%"
+if errorlevel 1 (
+  echo [ERROR] Failed to create build directory "%PS2_BUILD_DIR%" 1>&2
+  exit /b 1
+)
 
 > "%LOG_DETAIL%" echo Timestamp : %STAMP%
 >> "%LOG_DETAIL%" echo Source    : %PS2_SRC_DIR%
