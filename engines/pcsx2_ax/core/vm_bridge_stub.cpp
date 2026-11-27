@@ -1,3 +1,4 @@
+#include "AxSdkSiliconBridge.hpp"
 // SPDX-FileCopyrightText: 2026 The Silicon Preservation Society (galaxywarriordad)
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -18,6 +19,7 @@ pcsx2_ax::core::VmContext g_default_ctx{};
 std::atomic<pcsx2_ax::core::VmContext*> g_active_ctx{&g_default_ctx};
 std::atomic<pcsx2_ax::core::IHardwareModeAdapter*> g_bound_adapter{nullptr};
 pcsx2_ax::audio::FlacAxAudioBridge g_audio_bridge{};
+pcsx2_ax::sdk::AxSdkSiliconBridge g_sdk_bridge{};
 std::string g_media_path{};
 std::atomic<bool> g_media_ready{false};
 std::atomic<bool> g_memcard_busy{false};
@@ -84,7 +86,8 @@ return ensure_nonzero_epoch(ctx.epoch.load(std::memory_order_acquire));
 
 uint64_t advance_epoch(core::VmContext& ctx) noexcept {
 const uint64_t next = ensure_nonzero_epoch(ctx.epoch.load(std::memory_order_acquire)) + 1u;
-g_audio_bridge.on_epoch_transition(next);
+g_sdk_bridge.on_epoch_transition(next);
+	g_audio_bridge.on_epoch_transition(next);
 publish_snapshot(ctx, next);
 return next;
 }
@@ -133,6 +136,7 @@ return false;
 publish_snapshot(ctx, ep);
 if (adapter != nullptr && !adapter->initialize()) {
 g_audio_bridge.shutdown();
+	g_sdk_bridge.shutdown();
 return false;
 }
 return true;
@@ -160,6 +164,7 @@ return true;
 
 void shutdown_mode_subsystems(core::VmContext& ctx) noexcept {
 g_audio_bridge.shutdown();
+	g_sdk_bridge.shutdown();
 core::IHardwareModeAdapter* adapter = get_mode_adapter(ctx);
 if (adapter != nullptr) {
 adapter->shutdown();
@@ -203,6 +208,11 @@ return ctx.memcard_busy.load(std::memory_order_acquire) || g_memcard_busy.load(s
 
 pcsx2_ax::audio::FlacAxAudioTelemetry current_audio_telemetry() noexcept {
 	return g_audio_bridge.telemetry();
+}
+
+
+pcsx2_ax::sdk::SiliconProfile current_silicon_profile() noexcept {
+	return g_sdk_bridge.profile();
 }
 
 } // namespace pcsx2_ax::vm_bridge

@@ -130,8 +130,8 @@ void InitializeDiscordPresence();
 void ShutdownDiscordPresence();
 void UpdateDiscordPresence(bool update_session_time);
 void PollDiscordPresence();
-std::string GetSaveStateFileName(const char* game_serial, u32 game_crc, s32 slot, bool backup = false);
-std::string GetSaveStateFileName(const char* filename, s32 slot, bool backup = false);
+std::string GetSaveStateFileName(const char* game_serial, u32 game_crc, s32 slot, bool backup);
+std::string GetSaveStateFileName(const char* filename, s32 slot, bool backup);
 bool HasSaveStateInSlot(const char* game_serial, u32 game_crc, s32 slot);
 std::string GetCurrentSaveStateFileName(s32 slot, bool backup = false);
 bool DoLoadState(const char* filename, Error* error = nullptr);
@@ -142,9 +142,9 @@ void ZipSaveState(std::unique_ptr<ArchiveEntryList> elist, std::unique_ptr<SaveS
 void ZipSaveStateOnThread(std::unique_ptr<ArchiveEntryList> elist, std::unique_ptr<SaveStateScreenshotData> screenshot,
                           std::string filename, s32 slot_for_message, std::function<void(const std::string&)> error_callback);
 void WaitForSaveStateFlush();
-u32 DeleteSaveStates(const char* game_serial, u32 game_crc, bool also_backups = true);
-bool LoadState(const char* filename, Error* error = nullptr);
-bool LoadStateFromSlot(s32 slot, bool backup, Error* error = nullptr);
+u32 DeleteSaveStates(const char* game_serial, u32 game_crc, bool also_backups);
+bool LoadState(const char* filename, Error* error);
+bool LoadStateFromSlot(s32 slot, bool backup, Error* error);
 void SaveState(const char* filename, bool zip_on_thread, bool backup_old_state,
                std::function<void(const std::string&)> error_callback);
 void SaveStateToSlot(s32 slot, bool zip_on_thread, std::function<void(const std::string&)> error_callback);
