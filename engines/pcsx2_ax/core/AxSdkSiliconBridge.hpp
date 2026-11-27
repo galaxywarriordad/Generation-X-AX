@@ -99,31 +99,31 @@ case SiliconProfileKind::CometRocketI5NoHt231:
 return SiliconProfile{
 kind, "x86_64_comet_rocket_i5_noht_231", "2:3:1", "qsv_vaapi",
 0x01ULL, 0x02ULL, 0x04ULL, 0x08ULL, 0x10ULL, 0x1CULL, 0x3CULL, 0x20ULL,
-5.00, 5.50, 192U, 512U, false
+5.00, 5.50, 128U, 512U, false
 };
 case SiliconProfileKind::CometRocketI7I9NoHt8C:
 return SiliconProfile{
 kind, "x86_64_comet_rocket_i7_i9_noht_8c", "8c_noht_1_1_4_2", "qsv_vaapi",
 0x01ULL, 0x02ULL, 0x04ULL, 0x08ULL, 0x10ULL, 0x3CULL, 0x3CULL, 0xC0ULL,
-5.00, 5.50, 192U, 512U, false
+5.00, 5.50, 128U, 512U, false
 };
 case SiliconProfileKind::QuadCoreSafe121:
 return SiliconProfile{
 kind, "x86_64_quadcore_safe_121", "1:2:1", "vaapi_conservative",
 0x01ULL, 0x02ULL, 0x04ULL, 0x04ULL, 0x04ULL, 0x04ULL, 0x0CULL, 0x08ULL,
-3.00, 3.50, 128U, 512U, false
+3.00, 3.50, 64U, 512U, false
 };
 case SiliconProfileKind::ZenCcxConservative:
 return SiliconProfile{
 kind, "x86_64_zen_ccx_conservative", "ccx_pinned", "none",
 0x01ULL, 0x02ULL, 0x04ULL, 0x08ULL, 0x10ULL, 0x3CULL, 0x3CULL, 0x40ULL,
-5.00, 5.50, 192U, 512U, false
+5.00, 5.50, 128U, 512U, false
 };
 case SiliconProfileKind::Rk3326Default121:
 return SiliconProfile{
 kind, "aarch64_rk3326_default_121", "1:2:1", "none",
 0x01ULL, 0x02ULL, 0x04ULL, 0x04ULL, 0x04ULL, 0x04ULL, 0x0CULL, 0x08ULL,
-1.50, 2.00, 64U, 1024U, false
+1.50, 2.00, 32U, 1024U, false
 };
 case SiliconProfileKind::CoffeeLakeMaxwell231:
 default:
@@ -131,7 +131,7 @@ return SiliconProfile{
 SiliconProfileKind::CoffeeLakeMaxwell231,
 "x86_64_coffeelake_maxwell_231", "2:3:1", "qsv_vaapi",
 0x01ULL, 0x02ULL, 0x04ULL, 0x08ULL, 0x10ULL, 0x1CULL, 0x3CULL, 0x20ULL,
-5.00, 5.50, 192U, 512U, false
+5.00, 5.50, 128U, 512U, false
 };
 }
 }

@@ -215,4 +215,8 @@ pcsx2_ax::sdk::SiliconProfile current_silicon_profile() noexcept {
 	return g_sdk_bridge.profile();
 }
 
+core::VmContext& default_context() noexcept {
+return g_default_ctx;
+}
+
 } // namespace pcsx2_ax::vm_bridge

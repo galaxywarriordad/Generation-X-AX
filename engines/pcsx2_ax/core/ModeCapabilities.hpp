@@ -1,9 +1,10 @@
-﻿// SPDX-FileCopyrightText: 2026 The Silicon Preservation Society (galaxywarriordad)
+// SPDX-FileCopyrightText: 2026 The Silicon Preservation Society (galaxywarriordad)
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
 
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -11,11 +12,18 @@
 
 namespace pcsx2_ax::core {
 
+inline constexpr std::size_t kCacheLineBytes = 64u;
+inline constexpr std::size_t kTelemetryRingCapacity = 256u; // Power of two
+inline constexpr std::size_t kTelemetryRingMask = kTelemetryRingCapacity - 1u;
+inline constexpr double kVramPruneGib = 5.00;
+inline constexpr double kVramCeilingGib = 5.50;
+
 #ifndef PCSX2_AX_CORE_MODE_TYPES_DEFINED
 #define PCSX2_AX_CORE_MODE_TYPES_DEFINED
+
 enum class HardwareMode : uint8_t {
-  Ps2Console, // Retail PS2 console BIOS + disc (.iso/.chd/.zso) + .ps2 memory cards
-  CohHArcade  // System 246 / 256 / Super 256 COH-H board + .acgame + dongle + ACSRAM/NVRAM
+  Ps2Console = 0u, // Retail PS2 console BIOS + disc (.iso/.chd/.zso) + .ps2 memory cards
+  CohHArcade = 1u  // System 246 / 256 / Super 256 COH-H board + .acgame + dongle + ACSRAM/NVRAM
 };
 
 struct BiosDescriptor {
@@ -27,29 +35,43 @@ struct BiosDescriptor {
   bool is_arcade_coh_h{false};
 };
 
-struct ModeEpochSnapshot {
-  uint64_t epoch_id = 0;
-  uint64_t cycle_timestamp = 0;
-  HardwareMode active_mode = HardwareMode::Ps2Console;
+struct alignas(kCacheLineBytes) ModeEpochSnapshot {
+  uint64_t epoch{1u};
+  uint64_t epoch_id{0u};
+  uint64_t cycle_timestamp{0u};
+  HardwareMode mode{HardwareMode::Ps2Console};
+  HardwareMode active_mode{HardwareMode::Ps2Console};
+  BiosDescriptor bios{};
+  std::filesystem::path save_directory{"/userdata/saves/ps2/"};
 };
 
-struct FrameTelemetrySample {
-  uint64_t epoch_id = 0;
-  uint64_t frame_index = 0;
-  double frame_time_ms = 0.0;
-  double transfer_queue_ms = 0.0;
-  size_t vram_allocated_bytes = 0;
-  size_t bar1_ring_used_bytes = 0;
-  uint32_t bar1_stalls = 0;
-  uint32_t gs_draw_calls = 0;
-  uint32_t vu_micro_kicks = 0;
-  uint32_t vif1_wait_us = 0;
-  uint32_t gif_path_wait_us = 0;
-  uint32_t dmac_stall_us = 0;
-  uint32_t sif_sync_wait_us = 0;
-  uint32_t cdvd_inflight_chunks = 0;
-  bool gameplay_active = false;
+struct alignas(kCacheLineBytes) FrameTelemetrySample {
+  uint64_t frame_index{0u};
+  uint64_t epoch{1u};
+  uint64_t epoch_id{0u};
+  uint64_t ee_cycles{0u};
+  uint64_t vu1_cycles{0u};
+  uint64_t gs_cycles{0u};
+  uint64_t framebuffer_crc64{0u};
+  double frame_time_ms{0.0};
+  double transfer_queue_ms{0.0};
+  double vram_allocated_gib{0.0};
+  size_t vram_allocated_bytes{0u};
+  size_t bar1_ring_used_bytes{0u};
+  uint32_t bar1_stalls{0u};
+  uint32_t gs_draw_calls{0u};
+  uint32_t vu_micro_kicks{0u};
+  uint32_t vif1_wait_us{0u};
+  uint32_t gif_path_wait_us{0u};
+  uint32_t dmac_stall_us{0u};
+  uint32_t sif_sync_wait_us{0u};
+  uint32_t cdvd_inflight_chunks{0u};
+  uint32_t cdvd_cache_hits{0u};
+  uint32_t cdvd_cache_misses{0u};
+  bool gameplay_active{false};
+  bool vram_prune_triggered{false};
 };
+
 #endif // PCSX2_AX_CORE_MODE_TYPES_DEFINED
 
 class VmContext;
@@ -135,6 +157,3 @@ concept ClockIrqPolicyConcept = std::derived_from<T, IClockIrqPolicy> && require
 };
 
 } // namespace pcsx2_ax::core
-
-
-

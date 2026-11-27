@@ -92,43 +92,6 @@ ax_frontier_midi_cmd_t MapMidiCommand(ax::retro::FrontierCommandId id) noexcept 
   }
 }
 
-#if defined(AX_FRONTIER_STUB_MAIN)
-struct StubFrameState {
-  size_t total_events = 0;
-  float roll_yaw = 0.0f;
-  float pitch = 0.0f;
-  float throttle = 0.0f;
-  int32_t warp_steps = 0;
-};
-
-void StubMidiHandler(const ax_frontier_midi_event_t* ev, void* user_data) {
-  auto* st = static_cast<StubFrameState*>(user_data);
-  if (!ev || !st) {
-    return;
-  }
-  ++st->total_events;
-  switch (ev->command) {
-    case AX_FRONTIER_MIDI_CMD_TRIM_ROLL_YAW:
-      st->roll_yaw = ev->axis_value;
-      break;
-    case AX_FRONTIER_MIDI_CMD_TRIM_PITCH:
-      st->pitch = ev->axis_value;
-      break;
-    case AX_FRONTIER_MIDI_CMD_THROTTLE_TRIM:
-      st->throttle = ev->axis_value;
-      break;
-    case AX_FRONTIER_MIDI_CMD_STEP_TIME_COMPRESSION:
-      st->warp_steps += ev->step_delta;
-      break;
-    case AX_FRONTIER_MIDI_CMD_RESET_TIME_COMPRESSION_1X:
-      st->warp_steps = 0;
-      break;
-    default:
-      break;
-  }
-}
-#endif
-
 } // namespace
 
 extern "C" {
@@ -195,28 +158,3 @@ size_t ax_frontier_step_frame(ax_frontier_midi_handler_fn handler, void* user_da
 
 } // extern "C"
 
-#if defined(AX_FRONTIER_STUB_MAIN)
-int main() {
-  if (ax_frontier_bridge_init() != 0) {
-    std::fprintf(stderr, "frontier-fe2 bridge init failed\n");
-    return 1;
-  }
-
-  StubFrameState sim_state{};
-  for (int frame = 0; frame < 5; ++frame) {
-    ax_frontier_step_frame(StubMidiHandler, &sim_state, kFrameMidiCap);
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
-  }
-
-  std::printf(
-      "frontier-fe2 stub loop ok: events=%zu roll_yaw=%.3f pitch=%.3f throttle=%.3f warp=%d\n",
-      sim_state.total_events,
-      sim_state.roll_yaw,
-      sim_state.pitch,
-      sim_state.throttle,
-      sim_state.warp_steps);
-
-  ax_frontier_bridge_shutdown();
-  return 0;
-}
-#endif
