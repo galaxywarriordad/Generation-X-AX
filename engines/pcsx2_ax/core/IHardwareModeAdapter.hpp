@@ -7,6 +7,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
@@ -21,16 +22,19 @@ inline constexpr std::size_t kTelemetryRingMask = kTelemetryRingCapacity - 1u;
 inline constexpr double kVramPruneGib = 5.00;
 inline constexpr double kVramCeilingGib = 5.50;
 
+#define PCSX2_AX_CORE_MODE_TYPES_DEFINED
 enum class HardwareMode : uint8_t {
 	Ps2Console = 0u, // Retail PS2 (--mode ps2 -> /userdata/saves/ps2/)
 	CohHArcade = 1u, // Namco System 246/256 (--mode coh-h -> /userdata/saves/pcsx2x6/)
 };
 
 struct BiosDescriptor {
-	uint32_t rom_version{0u};
-	uint32_t bios_crc{0u};
-	std::string_view region_code{};
-	bool is_arcade_coh_h{false};
+  std::filesystem::path path{};
+  uint32_t rom_version{0u};
+  uint32_t bios_crc{0u};
+  uint32_t crc32{0u};
+  std::string_view region_code{};
+  bool is_arcade_coh_h{false};
 };
 
 // Immutable epoch-stamped snapshot of active hardware/mode metadata
