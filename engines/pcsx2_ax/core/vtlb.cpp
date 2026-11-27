@@ -971,6 +971,9 @@ static void vtlb_CreateFastmemMapping(u32 vaddr, u32 mainmem_offset, const PageP
 
 static void vtlb_RemoveFastmemMapping(u32 vaddr)
 {
+	if (s_fastmem_virtual_mapping.empty())
+		return;
+
 	const u32 page = vaddr / VTLB_PAGE_SIZE;
 	if (s_fastmem_virtual_mapping[page] == NO_FASTMEM_MAPPING)
 		return;
@@ -995,6 +998,9 @@ static void vtlb_RemoveFastmemMapping(u32 vaddr)
 
 static void vtlb_RemoveFastmemMappings(u32 vaddr, u32 size)
 {
+	if (s_fastmem_virtual_mapping.empty())
+		return;
+
 	pxAssert((vaddr & VTLB_PAGE_MASK) == 0);
 	pxAssert(size > 0 && (size & VTLB_PAGE_MASK) == 0);
 
