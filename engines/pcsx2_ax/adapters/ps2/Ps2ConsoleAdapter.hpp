@@ -3,112 +3,65 @@
 
 #pragma once
 
-#include "core/IHardwareModeAdapter.hpp"
+#include "core/ModeCapabilities.hpp"
 
-#include <atomic>
 #include <cstdint>
-#include <span>
-#include <string_view>
+#include <filesystem>
+#include <string>
 
 namespace pcsx2_ax::adapters::ps2 {
 
-class Ps2ConsoleAdapter final : public pcsx2_ax::core::IHardwareModeAdapter {
+class Ps2ConsoleAdapter final
+  : public core::IMediaProvider,
+    public core::IInputBus,
+    public core::IPersistenceSink,
+    public core::IClockIrqPolicy {
 public:
-	static constexpr std::string_view kSaveRoot = "/userdata/saves/ps2/";
+  Ps2ConsoleAdapter(core::BiosDescriptor bios,
+                    std::filesystem::path media_path,
+                    std::filesystem::path save_root = "/userdata/saves/ps2",
+                    bool pal_mode = false) noexcept;
 
-	Ps2ConsoleAdapter() noexcept = default;
-	~Ps2ConsoleAdapter() noexcept override { shutdown(); }
+  // IMediaProvider
+  core::BiosDescriptor bios_descriptor() const override;
+  bool mount_media(core::VmContext& ctx) override;
+  void unmount_media() noexcept override;
+  bool read_sectors(uint64_t lba, uint32_t count, void* dst) override;
 
-	Ps2ConsoleAdapter(const Ps2ConsoleAdapter&)            = delete;
-	Ps2ConsoleAdapter& operator=(const Ps2ConsoleAdapter&) = delete;
+  // IInputBus
+  void reset_inputs() noexcept override;
+  void poll_host_inputs(uint64_t epoch_id) noexcept override;
+  uint8_t read_sio2_or_jvs(uint32_t port, uint32_t reg) noexcept override;
+  void write_sio2_or_jvs(uint32_t port, uint32_t reg, uint8_t val) noexcept override;
 
-	[[nodiscard]] pcsx2_ax::core::HardwareMode mode() const noexcept override {
-		return pcsx2_ax::core::HardwareMode::Ps2Console;
-	}
+  // IPersistenceSink
+  std::filesystem::path save_directory() const override;
+  bool commit_nvram_or_memcard(uint64_t epoch_id) override;
+  bool freeze_mode_state(core::StateWrapper& wrapper) override;
 
-	[[nodiscard]] std::string_view save_directory() const noexcept override {
-		return kSaveRoot;
-	}
+  // IClockIrqPolicy
+  double nominal_refresh_hz() const noexcept override;
+  void on_vsync(const core::FrameTelemetrySample& telemetry) override;
+  void on_epoch_drain(uint64_t closing_epoch_id) noexcept override;
 
-	[[nodiscard]] bool initialize() override {
-		if (initialized_.load(std::memory_order_acquire)) {
-			return true;
-		}
-		// Prototype Phase hook: wire BiosTools, IopBios, CDVD, SIO2, and Pad init here
-		bios_info_ = pcsx2_ax::core::BiosDescriptor{
-			.rom_version     = 0x0220u,
-			.bios_crc        = 0u,
-			.region_code     = "PS2",
-			.is_arcade_coh_h = false,
-		};
-		initialized_.store(true, std::memory_order_release);
-		return true;
-	}
-
-	[[nodiscard]] bool reset() override {
-		if (!initialized_.load(std::memory_order_acquire)) {
-			return initialize();
-		}
-		vsync_ticks_.store(0u, std::memory_order_release);
-		return true;
-	}
-
-	void shutdown() noexcept override {
-		if (!initialized_.exchange(false, std::memory_order_acq_rel)) {
-			return;
-		}
-		// Prototype Phase hook: flush/release retail PS2 disc and memory card state
-	}
-
-	void on_vsync() noexcept override {
-		if (!initialized_.load(std::memory_order_acquire)) {
-			return;
-		}
-		vsync_ticks_.fetch_add(1u, std::memory_order_relaxed);
-	}
-
-	[[nodiscard]] pcsx2_ax::core::BiosDescriptor bios_descriptor() const noexcept override {
-		return bios_info_;
-	}
-
-	[[nodiscard]] pcsx2_ax::core::ModeEpochSnapshot capture_snapshot(uint64_t epoch) const noexcept override {
-		return pcsx2_ax::core::ModeEpochSnapshot{
-			.epoch          = epoch,
-			.mode           = mode(),
-			.bios           = bios_info_,
-			.save_directory = kSaveRoot,
-		};
-	}
-
-	[[nodiscard]] bool read_media_sectors(uint32_t lba,
-	                                      uint32_t sector_count,
-	                                      std::span<uint8_t> out_bytes,
-	                                      uint16_t& out_sector_bytes) override {
-		constexpr uint16_t kDefaultPs2SectorSize = 2048u;
-		const std::size_t required = static_cast<std::size_t>(sector_count) * kDefaultPs2SectorSize;
-		if (!initialized_.load(std::memory_order_acquire) || sector_count == 0u || out_bytes.size() < required) {
-			return false;
-		}
-		(void)lba;
-		// Prototype Phase hook: delegate sector reads to CDVDdiscReader / CdvdSpscRing
-		out_sector_bytes = kDefaultPs2SectorSize;
-		return true;
-	}
-
-	[[nodiscard]] bool freeze_state(StateWrapper& wrapper) override {
-		(void)wrapper;
-		return initialized_.load(std::memory_order_acquire);
-	}
-
-	[[nodiscard]] bool is_initialized() const noexcept { return initialized_.load(std::memory_order_acquire); }
-	[[nodiscard]] uint64_t vsync_ticks() const noexcept { return vsync_ticks_.load(std::memory_order_acquire); }
+  [[nodiscard]] core::ModeEnvironment make_environment() noexcept {
+    return core::ModeEnvironment{
+      .mode = core::HardwareMode::Ps2Console,
+      .media = this,
+      .input = this,
+      .persistence = this,
+      .clock_irq = this,
+    };
+  }
 
 private:
-	std::atomic<bool>              initialized_{false};
-	std::atomic<uint64_t>          vsync_ticks_{0u};
-	pcsx2_ax::core::BiosDescriptor bios_info_{};
+  core::BiosDescriptor bios_;
+  std::filesystem::path media_path_;
+  std::filesystem::path save_root_;
+  bool pal_mode_ = false;
+  bool mounted_ = false;
+  uint64_t last_epoch_ = 0;
+  uint64_t last_vsync_frame_ = 0;
 };
-
-static_assert(pcsx2_ax::core::HardwareModeAdapterConcept<Ps2ConsoleAdapter>);
 
 } // namespace pcsx2_ax::adapters::ps2
